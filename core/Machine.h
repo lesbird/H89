@@ -107,6 +107,18 @@ public:
     Z80& cpu() { return cpu_; }
     uint8_t gpp() const { return gpp_; }
     uint8_t peek(uint16_t addr) { return memRead(addr); }
+    void poke(uint16_t addr, uint8_t value) { memWrite(addr, value); }
+
+    // Debugging. run() stops before executing an instruction at a
+    // breakpoint, and stopped() reports it; the next run() or
+    // stepInstruction() goes on from there, past the breakpoint.
+    void setBreakpoint(uint16_t addr, bool on);
+    bool hasBreakpoint(uint16_t addr) const { return breakpoints_[addr]; }
+    std::vector<uint16_t> breakpoints() const;
+    bool stopped() const { return stopped_; }
+    // Executes one CPU-board instruction (devices and terminal keep pace);
+    // returns its cycles.
+    int stepInstruction();
 
     // Snapshot of the whole machine: CPU board, terminal, floppy controllers,
     // and which disk images are mounted (by path; their contents stay in
@@ -129,6 +141,7 @@ private:
     void writeGpp(uint8_t value);
     void updateIrq();
     void drawTestPattern();
+    int stepOnce(); // one CPU step plus the devices
     uint64_t romHash() const;
     void saveDisks(StateWriter& w);
     void loadDisks(StateReader& r, std::vector<std::string>* warnings);
@@ -147,6 +160,9 @@ private:
     std::unique_ptr<H37> h37_;
     int terminalLag_ = 0; // cycles the terminal is behind the CPU board
     int serialPoll_ = 0;  // cycles until serialSource is next asked
+    std::vector<bool> breakpoints_ = std::vector<bool>(65536);
+    int breakpointCount_ = 0;
+    bool stopped_ = false;
     uint8_t gpp_ = 0;
     int timerCountdown_ = kTimerCycles;
     bool timerPending_ = false;

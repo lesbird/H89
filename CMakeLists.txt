@@ -21,6 +21,7 @@ else()
 endif()
 option(H89_BUILD_TESTS "Build unit tests and the ZEX harness" ON)
 option(H89_GLFW_FRONTEND "Build the GLFW front end (default on Windows)" ${H89_GLFW_DEFAULT})
+option(H89_DEBUGGER "Build the Dear ImGui debugger into the front ends" ON)
 
 if(MSVC)
     set(H89_WARNINGS /W4 /permissive- /wd4201) # 4201: anonymous struct in RegPair
@@ -40,6 +41,7 @@ add_library(h89core STATIC
     core/media/SoftDisk.cpp
     core/terminal/Crtc6845.cpp
     core/terminal/H19.cpp
+    core/DebugControl.cpp
     core/Machine.cpp
     core/RomSet.cpp
 )
@@ -71,6 +73,30 @@ else()
     target_link_libraries(h89render PUBLIC OpenGL::GL)
 endif()
 
+# --- Debugger: Dear ImGui panels shared by the front ends --------------------
+if(H89_DEBUGGER)
+    include(FetchContent)
+    FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.91.5
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(imgui)
+    add_library(h89debug STATIC
+        debug/DebuggerUI.cpp
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+    target_include_directories(h89debug PUBLIC debug ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+    target_link_libraries(h89debug PUBLIC h89core)
+    target_compile_definitions(h89debug PUBLIC H89_DEBUGGER=1)
+    if(APPLE)
+        target_compile_definitions(h89debug PRIVATE GL_SILENCE_DEPRECATION)
+    endif()
+endif()
+
 # --- macOS app (Objective-C++) ------------------------------------------------
 if(APPLE)
     add_executable(H89 MACOSX_BUNDLE
@@ -92,6 +118,10 @@ if(APPLE)
     # NSOpenGLView is deprecated but still supported; Metal is a later option.
     target_compile_definitions(H89 PRIVATE GL_SILENCE_DEPRECATION)
     target_link_libraries(H89 PRIVATE h89host h89render "-framework Cocoa")
+    if(H89_DEBUGGER)
+        target_sources(H89 PRIVATE platform/mac/H89DebuggerView.mm)
+        target_link_libraries(H89 PRIVATE h89debug "-framework QuartzCore")
+    endif()
 endif()
 
 # --- GLFW app (Windows; optional elsewhere) ------------------------------------
@@ -110,6 +140,10 @@ if(H89_GLFW_FRONTEND)
     add_executable(H89-glfw platform/glfw/main.cpp)
     target_compile_options(H89-glfw PRIVATE ${H89_WARNINGS})
     target_link_libraries(H89-glfw PRIVATE h89host h89render glfw)
+    if(H89_DEBUGGER)
+        target_sources(H89-glfw PRIVATE ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp)
+        target_link_libraries(H89-glfw PRIVATE h89debug)
+    endif()
     if(WIN32)
         set_target_properties(H89-glfw PROPERTIES WIN32_EXECUTABLE ON)
         if(MSVC)

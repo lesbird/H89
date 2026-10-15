@@ -190,38 +190,70 @@ void Machine::updateIrq() {
 
 int Machine::run(int cycles) {
     int done = 0;
+    bool resuming = stopped_; // don't stop again at the breakpoint we're on
+    stopped_ = false;
     while (done < cycles) {
-        int t = cpu_.step();
-        done += t;
-        console_.tick(t);
-        if (config_.serialCard) {
-            for (Ins8250& s : serial_) s.tick(t);
-            if (serialSource && (serialPoll_ -= t) <= 0) {
-                serialPoll_ = 64;
-                for (int p = 0; p < kSerialPorts; ++p) {
-                    if (!serial_[p].readyForInput()) continue;
-                    int b = serialSource(p);
-                    if (b >= 0) serial_[p].receive(static_cast<uint8_t>(b));
-                }
-            }
+        if (breakpointCount_ && !resuming && breakpoints_[cpu_.regs().pc] && !cpu_.halted()) {
+            stopped_ = true;
+            break;
         }
-        if (h17_) h17_->tick(t);
-        if (h37_) h37_->tick(t);
-        if (gpp_ & GPP_TIMER_ENABLE) {
-            timerCountdown_ -= t;
-            if (timerCountdown_ <= 0) {
-                timerCountdown_ += kTimerCycles;
-                timerPending_ = true;
-            }
-        }
-        updateIrq();
-        // Both Z80s run at 2.048 MHz; keep the terminal in step.
-        if (terminal_) {
-            terminalLag_ += t;
-            while (terminalLag_ > 0) terminalLag_ -= terminal_->step();
-        }
+        resuming = false;
+        done += stepOnce();
     }
     return done;
+}
+
+int Machine::stepInstruction() {
+    stopped_ = false;
+    int t = stepOnce();
+    // A HALT waits for an interrupt; step through the wait in one go.
+    for (int n = 0; cpu_.halted() && n < kCpuHz; n += 4) t += stepOnce();
+    return t;
+}
+
+void Machine::setBreakpoint(uint16_t addr, bool on) {
+    if (breakpoints_[addr] == on) return;
+    breakpoints_[addr] = on;
+    breakpointCount_ += on ? 1 : -1;
+}
+
+std::vector<uint16_t> Machine::breakpoints() const {
+    std::vector<uint16_t> list;
+    for (int a = 0; a < 65536 && static_cast<int>(list.size()) < breakpointCount_; ++a)
+        if (breakpoints_[a]) list.push_back(static_cast<uint16_t>(a));
+    return list;
+}
+
+int Machine::stepOnce() {
+    int t = cpu_.step();
+    console_.tick(t);
+    if (config_.serialCard) {
+        for (Ins8250& s : serial_) s.tick(t);
+        if (serialSource && (serialPoll_ -= t) <= 0) {
+            serialPoll_ = 64;
+            for (int p = 0; p < kSerialPorts; ++p) {
+                if (!serial_[p].readyForInput()) continue;
+                int b = serialSource(p);
+                if (b >= 0) serial_[p].receive(static_cast<uint8_t>(b));
+            }
+        }
+    }
+    if (h17_) h17_->tick(t);
+    if (h37_) h37_->tick(t);
+    if (gpp_ & GPP_TIMER_ENABLE) {
+        timerCountdown_ -= t;
+        if (timerCountdown_ <= 0) {
+            timerCountdown_ += kTimerCycles;
+            timerPending_ = true;
+        }
+    }
+    updateIrq();
+    // Both Z80s run at 2.048 MHz; keep the terminal in step.
+    if (terminal_) {
+        terminalLag_ += t;
+        while (terminalLag_ > 0) terminalLag_ -= terminal_->step();
+    }
+    return t;
 }
 
 void Machine::runFrame() {

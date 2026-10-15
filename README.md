@@ -4,7 +4,7 @@ A Heathkit H89 emulator: portable C++ core, Objective-C++ front end on macOS,
 GLFW front end on Windows, OpenGL rendering on both. See [PLAN.md](PLAN.md) for
 the architecture and milestones.
 
-**Status:** milestones 0–3, 5 and 6 are done, and 4 is mostly done.
+**Status:** milestones 0–3 and 5–7 are done, and 4 is mostly done.
 - The Z80 passes ZEXDOC and ZEXALL, including undocumented flags.
 - The CPU board boots MTR-89 and MTR-90.
 - The H19 terminal is fully emulated: its own Z80 runs the real 444-46
@@ -88,6 +88,20 @@ The screen is drawn like a CRT: phosphor persistence (short for white P4,
 longer for green and amber), a soft glow, scanlines and a gently curved tube
 face. Turn it off with View › CRT Effects (Mac) or Ctrl+Alt+C (Windows) for a
 flat, crisp picture.
+
+### Debugger
+
+A Dear ImGui debugger shows the CPU board's Z80 registers (editable while
+paused), a disassembly that follows the PC, breakpoints (click an address in
+the disassembly to toggle one), a memory view you can edit, and the state of
+the disk controllers. Run, Pause, Step and Step Over (which runs a CALL, RST,
+DJNZ or LDIR-style instruction to completion) control execution. Hitting a
+breakpoint pauses the machine and opens the debugger.
+- **Mac:** Machine › Debugger (⌘D) opens it in its own window.
+- **Windows:** Ctrl+Alt+D shows it over the screen.
+
+Configure with `-DH89_DEBUGGER=OFF` to build without it (and without
+fetching Dear ImGui).
 
 ### Printer and serial ports
 
@@ -178,8 +192,8 @@ build\Release\H89-glfw.exe
 ```
 
 Host shortcuts in the GLFW build: Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor
-colour, Ctrl+Alt+C CRT effects, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L
-save / load state. Options
+colour, Ctrl+Alt+C CRT effects, Ctrl+Alt+D debugger, Ctrl+Alt+T turbo,
+Ctrl+Alt+S / Ctrl+Alt+L save / load state. Options
 `--printer`, `--modem` and `--aux` connect the serial ports.
 
 ## Tests

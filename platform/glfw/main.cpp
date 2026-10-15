@@ -14,8 +14,16 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include "DebugControl.h"
 #include "GLRenderer.h"
 #include "SerialHost.h"
+
+#if H89_DEBUGGER
+#include "DebuggerUI.h"
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#endif
 
 #include <cctype>
 #include <fstream>
@@ -36,7 +44,22 @@ struct App {
     bool suppressNextChar = false; // keypad keys also generate a char event
     bool turbo = false;            // run as fast as the host allows
     h89::SerialHost serial[h89::Machine::kSerialPorts];
+    h89::DebugControl debug;
+#if H89_DEBUGGER
+    h89::DebuggerUI debuggerUI;
+    bool debuggerVisible = false;
+#endif
 };
+
+// True while the debugger overlay is taking the keyboard.
+bool debuggerHasKeyboard(const App& app) {
+#if H89_DEBUGGER
+    return app.debuggerVisible && ImGui::GetIO().WantCaptureKeyboard;
+#else
+    (void)app;
+    return false;
+#endif
+}
 
 // Quick save/load file, in the working directory.
 constexpr const char* kStateFile = "h89.state";
@@ -73,6 +96,8 @@ bool keypadKey(int key, h89::H19Key& out) {
 
 void onKey(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) {
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
+    const int hostKeys = GLFW_MOD_CONTROL | GLFW_MOD_ALT;
+    if (debuggerHasKeyboard(*app) && (mods & hostKeys) != hostKeys) return;
     h89::H19& term = *app->machine->terminal();
 
     if (key == GLFW_KEY_F10) { // BREAK is held, not typed
@@ -87,6 +112,9 @@ void onKey(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) 
         switch (key) {
         case GLFW_KEY_R: app->machine->reset(); break;
         case GLFW_KEY_C: app->renderer.setEffects(!app->renderer.effects()); break;
+#if H89_DEBUGGER
+        case GLFW_KEY_D: app->debuggerVisible = !app->debuggerVisible; break;
+#endif
         case GLFW_KEY_T:
             app->turbo = !app->turbo;
             updateTitle(*app);
@@ -189,6 +217,7 @@ void onDrop(GLFWwindow* window, int count, const char** paths) {
 
 void onChar(GLFWwindow* window, unsigned int codepoint) {
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
+    if (debuggerHasKeyboard(*app)) return;
     if (app->suppressNextChar) {
         app->suppressNextChar = false;
         return;
@@ -262,6 +291,14 @@ int main(int argc, char** argv) {
         glfwSetKeyCallback(window, onKey);
         glfwSetCharCallback(window, onChar);
         glfwSetDropCallback(window, onDrop);
+#if H89_DEBUGGER
+        // After our callbacks, so the ImGui backend chains to them.
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        ImGui_ImplGlfw_InitForOpenGL(window, true);
+        ImGui_ImplOpenGL3_Init("#version 150");
+#endif
 
         // Fixed 60 Hz emulation, decoupled from the display refresh rate.
         constexpr double kFrameTime = 1.0 / h89::Machine::kFrameHz;
@@ -277,13 +314,13 @@ int main(int argc, char** argv) {
             last = now;
             if (app.turbo) {
                 // As many frames as fit in most of a display refresh.
-                do app.machine->runFrame();
+                do app.debug.runFrame(*app.machine);
                 while (glfwGetTime() - now < 0.012);
                 pending = 0;
             }
             if (pending > 0.25) pending = 0.25; // don't spiral after a stall
             while (pending >= kFrameTime) {
-                app.machine->runFrame();
+                app.debug.runFrame(*app.machine);
                 pending -= kFrameTime;
             }
 
@@ -292,8 +329,24 @@ int main(int argc, char** argv) {
             int w, h;
             glfwGetFramebufferSize(window, &w, &h);
             app.renderer.draw(w, h);
+#if H89_DEBUGGER
+            if (app.debug.paused()) app.debuggerVisible = true; // e.g. a breakpoint was hit
+            if (app.debuggerVisible) {
+                ImGui_ImplOpenGL3_NewFrame();
+                ImGui_ImplGlfw_NewFrame();
+                ImGui::NewFrame();
+                app.debuggerUI.draw(*app.machine, app.debug);
+                ImGui::Render();
+                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            }
+#endif
             glfwSwapBuffers(window);
         }
+#if H89_DEBUGGER
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+#endif
         app.renderer.shutdown();
     }
 

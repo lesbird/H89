@@ -1,5 +1,8 @@
 #import "AppDelegate.h"
 
+#if H89_DEBUGGER
+#import "H89DebuggerView.h"
+#endif
 #import "H89DiskBrowser.h"
 #import "H89Emulator.h"
 #import "H89View.h"
@@ -31,6 +34,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSMenu* _disksMenu;
     NSMutableArray<H89DiskBrowser*>* _browsers;
     NSMenu* _serialMenu;
+#if H89_DEBUGGER
+    NSWindow* _debuggerWindow;
+    H89DebuggerView* _debuggerView;
+#endif
     NSInteger _speed;      // frames per tick; 0 = maximum
     NSInteger _lastSpeed;  // to return to from turbo
 }
@@ -74,6 +81,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
                                             userInfo:nil
                                              repeats:YES];
     [[NSRunLoop currentRunLoop] addTimer:_timer forMode:NSRunLoopCommonModes];
+#if H89_DEBUGGER
+    // "open H89.app --args -H89ShowDebugger YES" starts with the debugger open.
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"H89ShowDebugger"]) [self showDebugger:nil];
+#endif
 }
 
 // Loads the ROMs from the H89_ROMS environment variable or the saved folder,
@@ -100,6 +111,9 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     emulator.bellHandler = ^{ [weakSelf ringBell]; };
     _emulator = emulator;
     _view.emulator = emulator;
+#if H89_DEBUGGER
+    _debuggerView.emulator = emulator;
+#endif
     emulator.bootFromH37 = [NSUserDefaults.standardUserDefaults boolForKey:kBootFromH37Key];
     [self restoreDisks];
     for (NSInteger p = 0; p < 3; ++p) {
@@ -293,7 +307,33 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
         for (NSInteger i = 0; i < _speed; ++i) [_emulator runFrame];
     }
     _view.needsDisplay = YES;
+#if H89_DEBUGGER
+    if (_emulator.debuggerPaused && !_debuggerWindow.isVisible) [self showDebugger:nil]; // e.g. a breakpoint
+    if (_debuggerWindow.isVisible) _debuggerView.needsDisplay = YES;
+#endif
 }
+
+#if H89_DEBUGGER
+- (void)showDebugger:(id)sender {
+    if (!_debuggerWindow) {
+        NSRect frame = NSMakeRect(0, 0, 780, 700);
+        _debuggerWindow = [[NSWindow alloc]
+            initWithContentRect:frame
+                      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        _debuggerWindow.title = @"H89 Debugger";
+        _debuggerWindow.releasedWhenClosed = NO;
+        _debuggerWindow.contentMinSize = NSMakeSize(560, 420);
+        _debuggerView = [[H89DebuggerView alloc] initWithFrame:frame];
+        _debuggerView.emulator = _emulator;
+        _debuggerWindow.contentView = _debuggerView;
+        [_debuggerWindow cascadeTopLeftFromPoint:NSMakePoint(NSMaxX(_window.frame) - 120, NSMaxY(_window.frame) - 40)];
+    }
+    [_debuggerWindow makeKeyAndOrderFront:nil];
+}
+#endif
 
 - (void)chooseSpeed:(NSMenuItem*)sender {
     _speed = sender.tag;
@@ -505,6 +545,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     _serialMenu.autoenablesItems = NO;
     serialItem.submenu = _serialMenu;
     [machineMenu addItem:[NSMenuItem separatorItem]];
+#if H89_DEBUGGER
+    [machineMenu addItemWithTitle:@"Debugger" action:@selector(showDebugger:) keyEquivalent:@"d"].target = self;
+    [machineMenu addItem:[NSMenuItem separatorItem]];
+#endif
     [machineMenu addItemWithTitle:@"Save State…" action:@selector(saveState:) keyEquivalent:@"s"].target = self;
     [machineMenu addItemWithTitle:@"Load State…" action:@selector(loadState:) keyEquivalent:@"l"].target = self;
     [machineMenu addItem:[NSMenuItem separatorItem]];

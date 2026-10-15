@@ -1,3 +1,4 @@
+#include "DebugControl.h"
 #include "Machine.h"
 #include "check.h"
 #include "devices/Ins8250.h"
@@ -151,6 +152,45 @@ TEST_CASE("Serial card echoes MODEM input to the printer port") {
     };
     m.run(Machine::kCpuHz / 10); // 100 ms: about 96 characters' time at 9600 baud
     CHECK_EQ(out, in);
+}
+
+TEST_CASE("Breakpoints stop execution and stepping continues past them") {
+    RomBuilder b;
+    // 0000: LD A,0 / 0002: INC A / 0003: CALL 0010h / 0006: JR 0002h
+    // 0010: INC B / 0011: RET
+    b.at(0x0000, {0x3E, 0x00, 0x3C, 0xCD, 0x10, 0x00, 0x18, 0xFA});
+    b.at(0x0010, {0x04, 0xC9});
+    MachineConfig cfg;
+    cfg.monitorRom = b.rom;
+    Machine m(cfg);
+    h89::DebugControl dbg;
+
+    m.setBreakpoint(0x0002, true);
+    dbg.runFrame(m);
+    CHECK_EQ(dbg.paused(), true);
+    CHECK_EQ(m.cpu().regs().pc, 0x0002);
+    CHECK_EQ(m.cpu().regs().af.h, 0);
+
+    dbg.step(m); // INC A, past the breakpoint
+    CHECK_EQ(m.cpu().regs().pc, 0x0003);
+    CHECK_EQ(m.cpu().regs().af.h, 1);
+
+    dbg.stepOver(m); // runs the subroutine, stops after the CALL
+    CHECK_EQ(dbg.paused(), false);
+    dbg.runFrame(m);
+    CHECK_EQ(dbg.paused(), true);
+    CHECK_EQ(m.cpu().regs().pc, 0x0006);
+    CHECK_EQ(m.cpu().regs().bc.h, 1);
+    CHECK_EQ(m.hasBreakpoint(0x0006), false); // the temporary one is gone
+
+    dbg.resume(); // around the loop to the breakpoint again
+    dbg.runFrame(m);
+    CHECK_EQ(m.cpu().regs().pc, 0x0002);
+    CHECK_EQ(m.breakpoints().size(), size_t{1});
+    m.setBreakpoint(0x0002, false);
+    dbg.resume();
+    dbg.runFrame(m);
+    CHECK_EQ(dbg.paused(), false);
 }
 
 int main() { return check::runAll(); }

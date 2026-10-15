@@ -1,6 +1,7 @@
 #import "H89Emulator.h"
 #import "H89Emulator+Core.h"
 
+#include "DebugControl.h"
 #include "Machine.h"
 #include "RomSet.h"
 #include "SerialHost.h"
@@ -10,6 +11,7 @@
 @implementation H89Emulator {
     std::unique_ptr<h89::Machine> _machine;
     std::unique_ptr<h89::SerialHost[]> _serial;
+    h89::DebugControl _debug;
     NSString* _romSummary;
 }
 
@@ -47,7 +49,19 @@
 - (void)reset { _machine->reset(); }
 - (void)runFrame {
     for (int p = 0; p < h89::Machine::kSerialPorts; ++p) _serial[p].pump(*_machine, p);
-    _machine->runFrame();
+    _debug.runFrame(*_machine);
+}
+
+- (BOOL)debuggerPaused {
+    return _debug.paused();
+}
+
+- (h89::Machine&)machine {
+    return *_machine;
+}
+
+- (h89::DebugControl&)debugControl {
+    return _debug;
 }
 
 - (BOOL)connectSerialPort:(H89SerialPort)port spec:(NSString*)spec error:(NSError**)error {

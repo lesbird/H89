@@ -37,8 +37,10 @@ typedef NS_ENUM(NSInteger, H89Key) {
 @property(nonatomic, copy, nullable) void (^bellHandler)(void);
 
 - (void)reset;
-// Advances emulation by one 1/60 s frame.
+// Advances emulation by one 1/60 s frame, unless the debugger has paused it.
 - (void)runFrame;
+// True while stopped in the debugger (paused, stepping, or at a breakpoint).
+@property(nonatomic, readonly) BOOL debuggerPaused;
 // One luminance byte per pixel, screenWidth x screenHeight, valid until the
 // next -runFrame.
 - (const uint8_t*)framebuffer NS_RETURNS_INNER_POINTER;
