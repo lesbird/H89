@@ -94,6 +94,8 @@ public:
     // The displayed screen as text, one line per row (reverse video and
     // graphics characters are shown as their base codes).
     std::string screenText() const;
+    // Cursor position on the displayed screen; false if it is off screen.
+    bool cursorPosition(int& row, int& col) const;
 
     Z80& cpu() { return cpu_; }
     const Crtc6845& crtc() const { return crtc_; }

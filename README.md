@@ -49,25 +49,31 @@ Ctrl+Alt+1/2/3.
 
 ## Headless runner
 
-`h89run` runs the machine without a window:
+`h89run` runs the whole machine in a text terminal, showing the H19's screen
+and typing through its keyboard:
 
 ```sh
-# Full machine: types through the H19 keyboard and prints its screen
-build/h89run --rom roms/2732_444-142_MTR90.ROM --h17rom roms/2716_444-19_H17.ROM \
-    --h19rom roms/2732_444-46_H19CODE.BIN --font roms/2716_444-29_H19FONT.BIN \
-    --seconds 5 --type "S0000\r" --screenshot screen.pgm
-
-# CPU board only: console serial port on your terminal (Ctrl-] quits)
-build/h89run --rom roms/2732_444-142_MTR90.ROM --h17rom roms/2716_444-19_H17.ROM
+build/h89run                                   # boots to the MTR-90 H: prompt
+build/h89run --disk0 disks/HDOS_2-0_System.h8d # then type B, Return
 ```
 
-Other options: `--disk0/1/2 image.h8d`, `--ro` (mount disks write-protected),
-`--sw501 hex` (default `20`), `--ram kb`, `--trace-io`, `--expect text` (exit
-status for scripted tests), and `--step "text|keys"`, which waits for `text`
-in the output and then types `keys`:
+Press Ctrl-] to quit. With no ROM options, it loads the ROMs by part number
+from the first of `--roms <dir>`, `$H89_ROMS`, `./roms`, or `roms/` next to
+(or one level above) the executable, so `build/h89run` works from the
+project folder or anywhere else.
+
+Options:
+- `--disk0/1/2 image.h8d`, `--ro` (mount disks write-protected)
+- `--sw501 hex` (default `20`), `--ram kb`, `--trace-io`
+- `--rom`, `--h17rom`, `--h19rom`, `--font` load individual ROMs instead.
+  Without `--h19rom`/`--font`, the console serial port connects straight to
+  your terminal.
+- For scripts: `--seconds n` runs that much emulated time as fast as possible
+  and prints the final screen. `--step "text|keys"` waits for `text` in the
+  output, then types `keys`. `--expect text` sets the exit status.
 
 ```sh
-build/h89run ... --ro --disk0 disks/HDOS_2-0_System.h8d --seconds 120 \
+build/h89run --ro --disk0 disks/HDOS_2-0_System.h8d --seconds 120 \
     --step 'H: |B\r' --step 'ACTION?|\r' --step ')?|14-Oct-86\r' --step '>|CAT\r'
 ```
 

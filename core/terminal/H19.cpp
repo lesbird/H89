@@ -242,6 +242,15 @@ void H19::renderFrame() {
     }
 }
 
+bool H19::cursorPosition(int& row, int& col) const {
+    const int cols = crtc_.horizontalDisplayed();
+    if (cols <= 0) return false;
+    int offset = (crtc_.cursorAddress() - crtc_.startAddress()) & 0x7FF; // 2K video RAM wraps
+    row = offset / cols;
+    col = offset % cols;
+    return row < crtc_.verticalDisplayed();
+}
+
 std::string H19::screenText() const {
     std::string text;
     const int cols = crtc_.horizontalDisplayed();

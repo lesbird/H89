@@ -1,13 +1,20 @@
-// Headless H89: the console serial port is connected to this terminal.
+// Headless H89 in a text terminal.
 //
-//   h89run --rom MTR90.ROM [--h17rom 444-19.ROM] [--sw501 hex] [--ram kb]
-//          [--h19rom 444-46.ROM --font 444-29.ROM] [--disk0 f.h8d] [--disk1 f.h8d]
+//   h89run [--roms dir] [--disk0 f.h8d] [--disk1 f.h8d] [--disk2 f.h8d] [--ro]
+//          [--rom MTR90.ROM] [--h17rom 444-19.ROM] [--h19rom 444-46.ROM --font 444-29.ROM]
+//          [--sw501 hex] [--ram kb]
 //          [--seconds n] [--type text] [--step "wait|keys"]... [--expect text]
 //          [--screenshot f.pgm] [--trace-io]
 //
-// With --h19rom and --font the built-in H19 terminal is emulated: typing goes
-// through its keyboard and --expect / the final printout use its screen.
-// Without them the console serial port is wired straight to this terminal.
+// With no ROM options, the ROMs are found by part number in the first folder
+// of: --roms, $H89_ROMS, ./roms, and roms/ next to (or one level above) the
+// executable. Giving --rom instead loads only the ROMs named on the command
+// line.
+//
+// With the H19 ROMs the built-in terminal is emulated: typing goes through its
+// keyboard, the interactive mode mirrors its screen, and --expect / the final
+// printout use its screen. Without them the console serial port is wired
+// straight to this terminal.
 //
 // With --seconds the machine runs up to that much emulated time as fast as
 // possible, typing --type (\r for Return) once the ROM is waiting for input,
@@ -17,13 +24,15 @@
 // time interactively; press Ctrl-] to quit.
 
 #include "Machine.h"
-#include "cpu/Z80Disasm.h"
+#include "RomSet.h"
 
 #include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
@@ -39,8 +48,9 @@ namespace {
 
 [[noreturn]] void usage(const char* argv0) {
     std::fprintf(stderr,
-                 "usage: %s --rom <monitor.rom> [--h17rom <rom>] [--sw501 hex] [--ram kb]\n"
-                 "          [--h19rom <rom> --font <rom>] [--disk0 f.h8d] [--disk1 f.h8d] [--ro]\n"
+                 "usage: %s [--roms dir] [--disk0 f.h8d] [--disk1 f.h8d] [--disk2 f.h8d] [--ro]\n"
+                 "          [--rom <monitor.rom>] [--h17rom <rom>] [--h19rom <rom> --font <rom>]\n"
+                 "          [--sw501 hex] [--ram kb]\n"
                  "          [--seconds n] [--type text] [--step \"wait|keys\"]... [--expect text]\n"
                  "          [--screenshot f.pgm] [--trace-io]\n",
                  argv0);
@@ -63,7 +73,64 @@ std::string unescape(const char* s) {
     return out;
 }
 
+namespace fs = std::filesystem;
+
+// Where to look for the ROM folder when no ROM options are given.
+std::vector<fs::path> romSearchPath(const char* argv0, const std::string& explicitDir) {
+    if (!explicitDir.empty()) return {explicitDir};
+    std::vector<fs::path> dirs;
+    if (const char* env = std::getenv("H89_ROMS")) dirs.emplace_back(env);
+    dirs.emplace_back("roms");
+    std::error_code ec;
+    fs::path exe = fs::weakly_canonical(fs::absolute(argv0, ec), ec);
+    if (!ec && exe.has_parent_path()) {
+        dirs.push_back(exe.parent_path() / "roms");
+        dirs.push_back(exe.parent_path().parent_path() / "roms");
+    }
+    // Drop entries that name the same folder.
+    std::vector<fs::path> unique;
+    for (const auto& d : dirs) {
+        fs::path norm = fs::weakly_canonical(fs::absolute(d, ec), ec);
+        bool seen = false;
+        for (const auto& u : unique) seen = seen || fs::weakly_canonical(fs::absolute(u, ec), ec) == norm;
+        if (!seen) unique.push_back(d);
+    }
+    return unique;
+}
+
 #if !defined(_WIN32)
+// Shows the H19's screen in this terminal (alternate screen buffer).
+struct ScreenMirror {
+    std::string lastText;
+    int lastRow = -1, lastCol = -1;
+    ScreenMirror() { std::fputs("\x1b]0;H89 (Ctrl-] quits)\x07\x1b[?1049h\x1b[2J", stdout); }
+    ~ScreenMirror() {
+        std::fputs("\x1b[?1049l", stdout);
+        std::fflush(stdout);
+    }
+    void update(const h89::H19& term) {
+        std::string text = term.screenText();
+        int row = 0, col = 0;
+        bool cursor = term.cursorPosition(row, col);
+        if (text == lastText && row == lastRow && col == lastCol) return;
+        lastText = text;
+        lastRow = row;
+        lastCol = col;
+        std::string out = "\x1b[?25l\x1b[H";
+        size_t pos = 0, nl;
+        int line = 0;
+        while ((nl = text.find('\n', pos)) != std::string::npos && line < 25) {
+            if (line++) out += "\r\n";
+            out += text.substr(pos, nl - pos) + "\x1b[K";
+            pos = nl + 1;
+        }
+        out += "\x1b[J";
+        if (cursor) out += "\x1b[" + std::to_string(row + 1) + ";" + std::to_string(col + 1) + "H\x1b[?25h";
+        std::fputs(out.c_str(), stdout);
+        std::fflush(stdout);
+    }
+};
+
 struct RawTerminal {
     termios saved{};
     bool active = false;
@@ -93,11 +160,14 @@ int main(int argc, char** argv) {
     bool traceIo = false;
     bool readOnly = false;
     std::string diskPaths[3];
+    std::string romDir;
 
     for (int i = 1; i < argc; ++i) {
         auto arg = [&](const char* name) { return std::strcmp(argv[i], name) == 0 && i + 1 < argc; };
         std::string err;
-        if (arg("--rom")) {
+        if (arg("--roms")) {
+            romDir = argv[++i];
+        } else if (arg("--rom")) {
             config.monitorRom = h89::loadFile(argv[++i], &err);
         } else if (arg("--h17rom")) {
             config.h17Rom = h89::loadFile(argv[++i], &err);
@@ -140,7 +210,32 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (config.monitorRom.empty()) usage(argv[0]);
+    if (config.monitorRom.empty()) {
+        // No ROMs named: load the whole set from the first ROM folder found,
+        // keeping any individual ROMs given on the command line.
+        std::string tried;
+        bool found = false;
+        for (const auto& dir : romSearchPath(argv[0], romDir)) {
+            h89::RomScan scan = h89::scanRomDirectory(dir.string());
+            if (!scan.ok()) {
+                tried += "\n  " + dir.string();
+                continue;
+            }
+            config.monitorRom = std::move(scan.config.monitorRom);
+            if (config.h17Rom.empty()) config.h17Rom = std::move(scan.config.h17Rom);
+            if (config.terminal.rom.empty()) config.terminal.rom = std::move(scan.config.terminal.rom);
+            if (config.terminal.font.empty()) config.terminal.font = std::move(scan.config.terminal.font);
+            found = true;
+            break;
+        }
+        if (!found) {
+            std::fprintf(stderr,
+                         "No complete ROM set found (monitor 444-142 or 444-62, H19 444-46 and 444-29).\n"
+                         "Looked in:%s\nUse --roms <dir>, set H89_ROMS, or name ROMs with --rom etc.\n",
+                         tried.c_str());
+            return 2;
+        }
+    }
 
     h89::Machine machine(config);
     h89::H19* terminal = machine.terminal();
@@ -159,7 +254,7 @@ int main(int argc, char** argv) {
     std::string output;
     machine.consoleOutput = [&](uint8_t b) {
         output += static_cast<char>(b & 0x7F);
-        if (!terminal || seconds <= 0) {
+        if (!terminal) {
             std::putchar(b & 0x7F);
             std::fflush(stdout);
         }
@@ -242,7 +337,9 @@ int main(int argc, char** argv) {
     return 2;
 #else
     RawTerminal raw;
-    std::fprintf(stderr, "[h89run: Ctrl-] to quit]\r\n");
+    std::unique_ptr<ScreenMirror> mirror;
+    if (terminal) mirror = std::make_unique<ScreenMirror>();
+    else std::fprintf(stderr, "[h89run: Ctrl-] to quit]\r\n");
     using clock = std::chrono::steady_clock;
     auto next = clock::now();
     for (;;) {
@@ -254,6 +351,7 @@ int main(int argc, char** argv) {
             typeKey(static_cast<uint8_t>(c == '\n' ? '\r' : c));
         }
         machine.run(h89::Machine::kCpuHz / 100); // 10 ms slices
+        if (mirror) mirror->update(*terminal);
         next += std::chrono::milliseconds(10);
         std::this_thread::sleep_until(next);
     }
