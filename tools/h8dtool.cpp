@@ -1,5 +1,5 @@
-// h8dtool: lists, extracts, inserts and deletes files in H17 disk images
-// (HDOS 2.0 and Heath CP/M 2.2).
+// h8dtool: lists, extracts, inserts and deletes files in H17 (.h8d) and
+// H37 (.h37, .imd) disk images holding HDOS 2.0 or Heath CP/M 2.2.
 //
 //   h8dtool list image.h8d
 //   h8dtool get  image.h8d [-d dir] [file...]   (no files: extract them all)
@@ -8,7 +8,10 @@
 
 #include "media/DiskFiles.h"
 #include "media/H17Disk.h"
+#include "media/SoftDisk.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -46,10 +49,20 @@ int main(int argc, char** argv) {
     bool writing = command == "put" || command == "rm";
     if (!writing && command != "list" && command != "get") usage();
 
-    h89::H17Disk disk;
+    // .h8d images are H17 disks; anything else is soft-sectored.
+    std::string ext = fs::path(image).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    h89::H17Disk h17;
+    h89::SoftDisk soft;
     std::string error;
-    if (!disk.load(image, !writing, &error)) return fail(error);
-    auto fsys = h89::DiskFileSystem::open(disk, &error);
+    std::unique_ptr<h89::DiskFileSystem> fsys;
+    if (ext == ".h8d") {
+        if (!h17.load(image, !writing, &error)) return fail(error);
+        fsys = h89::DiskFileSystem::open(h17, &error);
+    } else {
+        if (!soft.load(image, !writing, &error)) return fail(error);
+        fsys = h89::DiskFileSystem::open(soft, &error);
+    }
     if (!fsys) return fail(image + ": " + error);
 
     if (command == "list") {

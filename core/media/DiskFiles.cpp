@@ -68,13 +68,13 @@ public:
     static constexpr uint8_t kFlagSystem = 0x80, kFlagLocked = 0x40, kFlagWriteProtect = 0x20,
                              kFlagContiguous = 0x10;
 
-    explicit HdosFileSystem(H17Disk& disk) : DiskFileSystem(disk) {
+    explicit HdosFileSystem(std::unique_ptr<SectorStore> store) : DiskFileSystem(std::move(store)) {
         const uint8_t* label = sector(9);
         serial_ = label[0];
         dirSector_ = label[3] | (label[4] << 8);
         grtSector_ = label[5] | (label[6] << 8);
         spg_ = label[7];
-        totalSectors_ = disk.tracks() * H17Disk::kSectorsPerTrack;
+        totalSectors_ = store_->count();
         std::string text(reinterpret_cast<const char*>(label + 0x11), 60);
         text = text.substr(0, text.find('\0'));
         while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.pop_back();
@@ -368,36 +368,53 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Heath CP/M 2.2 on a 40-track single-sided H17 disk
+// Heath CP/M 2.2
 //
-// Tracks 0-2 hold the system; the filesystem starts on track 3. Blocks are
-// 1K (four 256-byte sectors) and the first two hold the 64-entry
-// directory. The BIOS lays logical sectors on each track with a skew of 4.
+// The first tracks hold the system; the filesystem follows, divided into
+// blocks whose first ones hold the directory. Block numbers are 8-bit (16
+// per directory entry), so an entry covers 16 blocks: with 2K blocks that
+// is two 16K logical extents (EXM = 1).
+struct CpmLayout {
+    int reservedSectors;  // OFF tracks, in 256-byte sectors
+    int sectorsPerTrack;
+    const int* skew;      // logical -> physical sector within a track, or null
+    int blockSize;
+    int blocks;           // DSM + 1
+    int dirBlocks;
+    int dirEntries;       // DRM + 1
+};
+
+// H17: the BIOS lays logical sectors on each track with a skew of 4.
+constexpr int kH17Skew[10] = {0, 4, 8, 2, 6, 1, 5, 9, 3, 7};
+constexpr CpmLayout kH17Layout{30, 10, kH17Skew, 1024, 92, 2, 64};
+// H37 single density (40 x 10 x 256, FM): the H17 layout without skew,
+// since the sector IDs carry the interleave.
+constexpr CpmLayout kH37SingleLayout{30, 10, nullptr, 1024, 92, 2, 64};
+// H37 double density, 96 tpi (80 x 16 x 256, MFM) as FORMAT makes it.
+constexpr CpmLayout kH37DoubleLayout{32, 16, nullptr, 2048, 156, 2, 128};
+
 class CpmFileSystem : public DiskFileSystem {
 public:
-    static constexpr int kTracks = 40;
-    static constexpr int kOffset = 3;          // reserved tracks
-    static constexpr int kBlockSize = 1024;
-    static constexpr int kSectorsPerBlock = kBlockSize / kSectorSize;
-    static constexpr int kBlocks = 92;         // DSM + 1
-    static constexpr int kDirBlocks = 2;       // AL0 = C0h
-    static constexpr int kDirEntries = 64;     // DRM + 1
     static constexpr int kEntrySize = 32;
     static constexpr int kRecordSize = 128;
     static constexpr int kRecordsPerExtent = 128;
-    static constexpr int kBlocksPerEntry = 16; // 8-bit block numbers, EXM = 0
+    static constexpr int kBlocksPerEntry = 16; // 8-bit block numbers
     static constexpr uint8_t kEmpty = 0xE5;
-    static constexpr int kSkew[H17Disk::kSectorsPerTrack] = {0, 4, 8, 2, 6, 1, 5, 9, 3, 7};
 
-    using Directory = std::array<uint8_t, kDirEntries * kEntrySize>;
+    using Directory = std::vector<uint8_t>;
 
-    explicit CpmFileSystem(H17Disk& disk) : DiskFileSystem(disk) {}
+    CpmFileSystem(std::unique_ptr<SectorStore> store, const CpmLayout& layout)
+        : DiskFileSystem(std::move(store)), layout_(layout),
+          sectorsPerBlock_(layout.blockSize / kSectorSize),
+          extentsPerEntry_(kBlocksPerEntry * layout.blockSize / (kRecordsPerExtent * kRecordSize)),
+          dirSectors_(layout.dirEntries * kEntrySize / kSectorSize) {}
 
     // A directory where every used entry looks like a CP/M file.
     bool valid() const {
-        if (disk_.tracks() != kTracks) return false;
+        int sectors = layout_.reservedSectors + layout_.blocks * sectorsPerBlock_;
+        if (store_->count() < sectors || store_->sectorsPerTrack() != layout_.sectorsPerTrack) return false;
         Directory dir = readDirectory();
-        for (int i = 0; i < kDirEntries; ++i) {
+        for (int i = 0; i < layout_.dirEntries; ++i) {
             const uint8_t* e = &dir[i * kEntrySize];
             if (e[0] == kEmpty) continue;
             if (e[0] > 15 || e[15] > kRecordsPerExtent) return false;
@@ -406,7 +423,7 @@ public:
                 if (c < 0x20 || c > 0x7E) return false;
             }
             for (int k = 16; k < 32; ++k)
-                if (e[k] >= kBlocks) return false;
+                if (e[k] >= layout_.blocks) return false;
         }
         return true;
     }
@@ -417,7 +434,7 @@ public:
     std::vector<DiskFile> list() const override {
         Directory dir = readDirectory();
         std::map<std::pair<int, std::string>, DiskFile> files;
-        for (int i = 0; i < kDirEntries; ++i) {
+        for (int i = 0; i < layout_.dirEntries; ++i) {
             const uint8_t* e = &dir[i * kEntrySize];
             if (e[0] > 15) continue;
             DiskFile& f = files[{e[0], entryName(e)}];
@@ -437,7 +454,7 @@ public:
 
     uint32_t freeBytes() const override {
         std::vector<bool> used = usedBlocks(readDirectory());
-        return static_cast<uint32_t>(std::count(used.begin(), used.end(), false)) * kBlockSize;
+        return static_cast<uint32_t>(std::count(used.begin(), used.end(), false)) * layout_.blockSize;
     }
 
     std::string diskName(const std::string& hostName, std::string* error) const override {
@@ -454,23 +471,27 @@ public:
 
     bool read(const DiskFile& file, std::vector<uint8_t>* data, std::string* error) const override {
         Directory dir = readDirectory();
-        std::vector<const uint8_t*> extents = fileEntries(dir, file.user, file.name);
-        if (extents.empty()) {
+        std::vector<const uint8_t*> entries = fileEntries(dir, file.user, file.name);
+        if (entries.empty()) {
             setError(error, file.name + " is not on this disk.");
             return false;
         }
         data->clear();
-        for (const uint8_t* e : extents) {
-            int records = static_cast<int>(extentNumber(e) * kRecordsPerExtent + e[15]) -
-                          static_cast<int>(data->size() / kRecordSize);
+        for (const uint8_t* e : entries) {
+            // Records this entry holds: its full extents plus the last one's count.
+            int records = (e[12] & (extentsPerEntry_ - 1)) * kRecordsPerExtent + e[15];
             for (int r = 0; r < records; ++r) {
-                int block = e[16 + r * kRecordSize / kBlockSize];
-                if (block < kDirBlocks || block >= kBlocks) {
+                int block = e[16 + r * kRecordSize / layout_.blockSize];
+                if (block < layout_.dirBlocks || block >= layout_.blocks) {
                     setError(error, file.name + " is damaged (it refers to a missing block).");
                     return false;
                 }
-                int offset = (r * kRecordSize) % kBlockSize;
-                const uint8_t* s = sector(diskSector(block * kSectorsPerBlock + offset / kSectorSize));
+                int offset = (r * kRecordSize) % layout_.blockSize;
+                const uint8_t* s = sector(diskSector(block * sectorsPerBlock_ + offset / kSectorSize));
+                if (!s) {
+                    setError(error, file.name + " is damaged (it runs off the disk).");
+                    return false;
+                }
                 const uint8_t* rec = s + offset % kSectorSize;
                 data->insert(data->end(), rec, rec + kRecordSize);
             }
@@ -494,21 +515,23 @@ public:
             }
         }
         int records = static_cast<int>((data.size() + kRecordSize - 1) / kRecordSize);
-        int blocks = (records * kRecordSize + kBlockSize - 1) / kBlockSize;
+        int blocks = (records * kRecordSize + layout_.blockSize - 1) / layout_.blockSize;
         int entries = std::max(1, (blocks + kBlocksPerEntry - 1) / kBlocksPerEntry);
+        int recordsPerEntry = extentsPerEntry_ * kRecordsPerExtent;
 
         // Plan on a copy with the old file gone, so its space is reusable.
         for (const uint8_t* e : existing) dir[e - dir.data()] = kEmpty;
         std::vector<bool> used = usedBlocks(dir);
         std::vector<int> freeList;
-        for (int b = 0; b < kBlocks; ++b)
+        for (int b = 0; b < layout_.blocks; ++b)
             if (!used[b]) freeList.push_back(b);
         std::vector<int> freeEntries;
-        for (int i = 0; i < kDirEntries; ++i)
+        for (int i = 0; i < layout_.dirEntries; ++i)
             if (dir[i * kEntrySize] == kEmpty) freeEntries.push_back(i);
         if (blocks > static_cast<int>(freeList.size())) {
-            setError(error, "Not enough room for " + name + ": it needs " + std::to_string(blocks) + "K and " +
-                                std::to_string(freeList.size()) + "K is free.");
+            int k = layout_.blockSize / 1024;
+            setError(error, "Not enough room for " + name + ": it needs " + std::to_string(blocks * k) + "K and " +
+                                std::to_string(freeList.size() * k) + "K is free.");
             return false;
         }
         if (entries > static_cast<int>(freeEntries.size())) {
@@ -517,11 +540,11 @@ public:
         }
 
         std::vector<uint8_t> padded(data);
-        padded.resize(static_cast<size_t>(blocks) * kBlockSize, 0x1A);
+        padded.resize(static_cast<size_t>(blocks) * layout_.blockSize, 0x1A);
         for (int b = 0; b < blocks; ++b) {
-            for (int s = 0; s < kSectorsPerBlock; ++s) {
-                const uint8_t* bytes = &padded[(static_cast<size_t>(b) * kSectorsPerBlock + s) * kSectorSize];
-                if (!writeSector(diskSector(freeList[b] * kSectorsPerBlock + s), bytes)) return writeFailed(error);
+            for (int s = 0; s < sectorsPerBlock_; ++s) {
+                const uint8_t* bytes = &padded[(static_cast<size_t>(b) * sectorsPerBlock_ + s) * kSectorSize];
+                if (!writeSector(diskSector(freeList[b] * sectorsPerBlock_ + s), bytes)) return writeFailed(error);
             }
         }
 
@@ -533,10 +556,13 @@ public:
             std::memset(e + 1, ' ', 11);
             std::memcpy(e + 1, base.data(), std::min<size_t>(base.size(), 8));
             std::memcpy(e + 9, ext.data(), std::min<size_t>(ext.size(), 3));
-            int inEntry = std::min(kRecordsPerExtent, records - k * kRecordsPerExtent);
-            e[12] = static_cast<uint8_t>(k & 31); // EX
-            e[14] = static_cast<uint8_t>(k >> 5); // S2
-            e[15] = static_cast<uint8_t>(inEntry);
+            // The entry's extent number is that of its last extent in use.
+            int inEntry = std::min(recordsPerEntry, records - k * recordsPerEntry);
+            int lastExtent = inEntry > 0 ? (inEntry - 1) / kRecordsPerExtent : 0;
+            int extent = k * extentsPerEntry_ + lastExtent;
+            e[12] = static_cast<uint8_t>(extent & 31); // EX
+            e[14] = static_cast<uint8_t>(extent >> 5); // S2
+            e[15] = static_cast<uint8_t>(inEntry - lastExtent * kRecordsPerExtent);
             for (int i = 0; i < kBlocksPerEntry && k * kBlocksPerEntry + i < blocks; ++i)
                 e[16 + i] = static_cast<uint8_t>(freeList[k * kBlocksPerEntry + i]);
         }
@@ -550,34 +576,33 @@ public:
             return false;
         }
         Directory dir = readDirectory();
-        std::vector<const uint8_t*> extents = fileEntries(dir, file.user, file.name);
-        if (extents.empty()) {
+        std::vector<const uint8_t*> entries = fileEntries(dir, file.user, file.name);
+        if (entries.empty()) {
             setError(error, file.name + " is not on this disk.");
             return false;
         }
-        for (const uint8_t* e : extents) dir[e - dir.data()] = kEmpty;
+        for (const uint8_t* e : entries) dir[e - dir.data()] = kEmpty;
         return writeDirectory(dir) ? true : writeFailed(error);
     }
 
 private:
     // Disk sector holding the filesystem's 256-byte logical sector `n`.
-    static int diskSector(int n) {
-        int track = kOffset + n / H17Disk::kSectorsPerTrack;
-        return track * H17Disk::kSectorsPerTrack + kSkew[n % H17Disk::kSectorsPerTrack];
+    int diskSector(int n) const {
+        int spt = layout_.sectorsPerTrack;
+        int track = n / spt, s = n % spt;
+        return layout_.reservedSectors + track * spt + (layout_.skew ? layout_.skew[s] : s);
     }
 
-    static constexpr int kDirSectors = kDirEntries * kEntrySize / kSectorSize;
-
     Directory readDirectory() const {
-        Directory dir{};
-        for (int s = 0; s < kDirSectors; ++s)
+        Directory dir(static_cast<size_t>(layout_.dirEntries) * kEntrySize, kEmpty);
+        for (int s = 0; s < dirSectors_; ++s)
             if (const uint8_t* p = sector(diskSector(s))) std::memcpy(&dir[s * kSectorSize], p, kSectorSize);
         return dir;
     }
 
     // Writes back the directory sectors that changed.
     bool writeDirectory(const Directory& dir) {
-        for (int s = 0; s < kDirSectors; ++s) {
+        for (int s = 0; s < dirSectors_; ++s) {
             const uint8_t* old = sector(diskSector(s));
             if (old && std::memcmp(old, &dir[s * kSectorSize], kSectorSize) == 0) continue;
             if (!writeSector(diskSector(s), &dir[s * kSectorSize])) return false;
@@ -598,9 +623,9 @@ private:
     static int extentNumber(const uint8_t* e) { return (e[14] << 5) | (e[12] & 31); }
 
     // A file's directory entries in extent order.
-    static std::vector<const uint8_t*> fileEntries(const Directory& dir, int user, const std::string& name) {
+    std::vector<const uint8_t*> fileEntries(const Directory& dir, int user, const std::string& name) const {
         std::vector<const uint8_t*> entries;
-        for (int i = 0; i < kDirEntries; ++i) {
+        for (int i = 0; i < layout_.dirEntries; ++i) {
             const uint8_t* e = &dir[i * kEntrySize];
             if (e[0] == user && entryName(e) == name) entries.push_back(e);
         }
@@ -609,14 +634,14 @@ private:
         return entries;
     }
 
-    static std::vector<bool> usedBlocks(const Directory& dir) {
-        std::vector<bool> used(kBlocks);
-        for (int b = 0; b < kDirBlocks; ++b) used[b] = true;
-        for (int i = 0; i < kDirEntries; ++i) {
+    std::vector<bool> usedBlocks(const Directory& dir) const {
+        std::vector<bool> used(layout_.blocks);
+        for (int b = 0; b < layout_.dirBlocks; ++b) used[b] = true;
+        for (int i = 0; i < layout_.dirEntries; ++i) {
             const uint8_t* e = &dir[i * kEntrySize];
             if (e[0] > 15) continue;
             for (int k = 16; k < 32; ++k)
-                if (e[k] && e[k] < kBlocks) used[e[k]] = true;
+                if (e[k] && e[k] < layout_.blocks) used[e[k]] = true;
         }
         return used;
     }
@@ -625,7 +650,85 @@ private:
         setError(error, "Couldn't write to the disk image.");
         return false;
     }
+
+    CpmLayout layout_;
+    int sectorsPerBlock_;
+    int extentsPerEntry_;
+    int dirSectors_;
 };
+
+// H17 disks: 10 sectors per track, all present.
+class H17Store : public SectorStore {
+public:
+    explicit H17Store(H17Disk& disk) : disk_(disk) {}
+    int count() const override { return disk_.tracks() * H17Disk::kSectorsPerTrack; }
+    int sectorsPerTrack() const override { return H17Disk::kSectorsPerTrack; }
+    const uint8_t* sector(int n) const override {
+        return disk_.sector(n / H17Disk::kSectorsPerTrack, n % H17Disk::kSectorsPerTrack);
+    }
+    bool writeSector(int n, const uint8_t* bytes) override {
+        return disk_.writeSector(n / H17Disk::kSectorsPerTrack, n % H17Disk::kSectorsPerTrack, bytes);
+    }
+    bool readOnly() const override { return disk_.readOnly(); }
+
+private:
+    H17Disk& disk_;
+};
+
+// Soft-sectored disks with the same 256-byte sectors, numbered 1..n, on
+// every track of one side.
+class SoftStore : public SectorStore {
+public:
+    explicit SoftStore(SoftDisk& disk) : disk_(disk) {}
+
+    bool init(std::string* error) {
+        if (disk_.sides() != 1) {
+            setError(error, "Copying files to and from double-sided disks isn't supported yet.");
+            return false;
+        }
+        const SoftDisk::Track* first = disk_.track(0, 0);
+        spt_ = first ? static_cast<int>(first->sectors.size()) : 0;
+        for (int c = 0; c < disk_.cylinders(); ++c) {
+            const SoftDisk::Track* t = disk_.track(c, 0);
+            if (!t || static_cast<int>(t->sectors.size()) != spt_ || spt_ == 0) return uneven(error);
+            for (int n = 1; n <= spt_; ++n) {
+                auto it = std::find_if(t->sectors.begin(), t->sectors.end(),
+                                       [&](const SoftDisk::Sector& s) { return s.number == n; });
+                if (it == t->sectors.end() || it->data.size() != kSectorSize) return uneven(error);
+                index_.push_back(static_cast<int>(it - t->sectors.begin()));
+            }
+        }
+        return true;
+    }
+
+    int count() const override { return static_cast<int>(index_.size()); }
+    int sectorsPerTrack() const override { return spt_; }
+    const uint8_t* sector(int n) const override {
+        return disk_.track(n / spt_, 0)->sectors[index_[n]].data.data();
+    }
+    bool writeSector(int n, const uint8_t* bytes) override {
+        return disk_.writeSector(n / spt_, 0, index_[n], std::vector<uint8_t>(bytes, bytes + kSectorSize), false);
+    }
+    bool readOnly() const override { return disk_.readOnly(); }
+
+private:
+    static bool uneven(std::string* error) {
+        setError(error, "This disk's tracks aren't all formatted alike, so its files can't be read.");
+        return false;
+    }
+
+    SoftDisk& disk_;
+    int spt_ = 0;
+    std::vector<int> index_; // logical sector -> index in its track
+};
+
+bool hasHdosLabel(const SectorStore& store) {
+    if (store.count() < 10) return false;
+    const uint8_t* label = store.sector(9);
+    int sectors = label[0x0C] | (label[0x0D] << 8);
+    int sectorSize = label[0x0E] | (label[0x0F] << 8);
+    return sectorSize == kSectorSize && sectors == store.count();
+}
 
 } // namespace
 
@@ -634,13 +737,36 @@ std::unique_ptr<DiskFileSystem> DiskFileSystem::open(H17Disk& disk, std::string*
         setError(error, "There is no disk in the drive.");
         return nullptr;
     }
-    if (disk.hasHdosLabel()) {
-        auto fs = std::make_unique<HdosFileSystem>(disk);
+    return open(std::make_unique<H17Store>(disk), true, error);
+}
+
+std::unique_ptr<DiskFileSystem> DiskFileSystem::open(SoftDisk& disk, std::string* error) {
+    if (!disk.loaded()) {
+        setError(error, "There is no disk in the drive.");
+        return nullptr;
+    }
+    auto store = std::make_unique<SoftStore>(disk);
+    if (!store->init(error)) return nullptr;
+    return open(std::move(store), false, error);
+}
+
+std::unique_ptr<DiskFileSystem> DiskFileSystem::open(std::unique_ptr<SectorStore> store, bool hardSectored,
+                                                     std::string* error) {
+    if (hasHdosLabel(*store)) {
+        auto fs = std::make_unique<HdosFileSystem>(std::move(store));
         if (!fs->valid(error)) return nullptr;
         return fs;
     }
-    auto cpm = std::make_unique<CpmFileSystem>(disk);
-    if (cpm->valid()) return cpm;
+    const CpmLayout* layouts[] = {&kH17Layout};
+    const CpmLayout* softLayouts[] = {&kH37SingleLayout, &kH37DoubleLayout};
+    auto candidates = hardSectored ? std::vector<const CpmLayout*>(std::begin(layouts), std::end(layouts))
+                                   : std::vector<const CpmLayout*>(std::begin(softLayouts), std::end(softLayouts));
+    for (const CpmLayout* layout : candidates) {
+        if (store->sectorsPerTrack() != layout->sectorsPerTrack) continue;
+        auto cpm = std::make_unique<CpmFileSystem>(std::move(store), *layout);
+        if (cpm->valid()) return cpm;
+        store = std::move(cpm->store_);
+    }
     setError(error, "This disk doesn't hold an HDOS or CP/M filesystem that can be read.");
     return nullptr;
 }
@@ -656,7 +782,7 @@ bool DiskFileSystem::find(const std::string& name, DiskFile* file) const {
 }
 
 bool DiskFileSystem::checkWritable(std::string* error) const {
-    if (disk_.readOnly()) {
+    if (store_->readOnly()) {
         setError(error, "The disk is write protected.");
         return false;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "H17Disk.h"
+#include "SoftDisk.h"
 
 #include <cstdint>
 #include <memory>
@@ -19,10 +20,23 @@ struct DiskFile {
     bool protectedFile = false; // locked or write protected: cannot be deleted or replaced
 };
 
-// The files inside an H17 disk image, for copying them to and from the host.
-// Understands HDOS 2.0 volumes and Heath CP/M 2.2 (40-track, single-sided)
-// disks. Changes go through H17Disk::writeSector, so they reach the image
-// file at once and a disk mounted in a drive stays consistent.
+// 256-byte sectors numbered from 0 across a whole disk, in the order the
+// operating systems count them: track by track, sectors in ID order.
+class SectorStore {
+public:
+    virtual ~SectorStore() = default;
+    virtual int count() const = 0;
+    virtual int sectorsPerTrack() const = 0;
+    virtual const uint8_t* sector(int n) const = 0;
+    virtual bool writeSector(int n, const uint8_t* bytes) = 0;
+    virtual bool readOnly() const = 0;
+};
+
+// The files inside a disk image, for copying them to and from the host.
+// Understands HDOS 2.0 volumes and Heath CP/M 2.2 on H17 disks and on
+// single-sided H37 disks (40-track single density, 80-track double
+// density). Changes go through the disk's own sector writes, so they reach
+// the image file at once and a disk mounted in a drive stays consistent.
 //
 // The emulated operating system does not know about these changes: HDOS
 // keeps a mounted disk's tables in memory (DISMOUNT and MOUNT it again) and
@@ -34,6 +48,7 @@ public:
     // Detects the filesystem on `disk`; returns null (and sets `error`) if
     // it is not one we understand. `disk` must outlive the result.
     static std::unique_ptr<DiskFileSystem> open(H17Disk& disk, std::string* error = nullptr);
+    static std::unique_ptr<DiskFileSystem> open(SoftDisk& disk, std::string* error = nullptr);
     virtual ~DiskFileSystem() = default;
 
     virtual Format format() const = 0;
@@ -56,18 +71,17 @@ public:
     virtual bool remove(const DiskFile& file, std::string* error = nullptr) = 0;
 
 protected:
-    explicit DiskFileSystem(H17Disk& disk) : disk_(disk) {}
+    explicit DiskFileSystem(std::unique_ptr<SectorStore> store) : store_(std::move(store)) {}
 
-    // Sectors numbered from 0 across the whole disk.
-    const uint8_t* sector(int n) const {
-        return disk_.sector(n / H17Disk::kSectorsPerTrack, n % H17Disk::kSectorsPerTrack);
-    }
-    bool writeSector(int n, const uint8_t* bytes) {
-        return disk_.writeSector(n / H17Disk::kSectorsPerTrack, n % H17Disk::kSectorsPerTrack, bytes);
-    }
+    const uint8_t* sector(int n) const { return n >= 0 && n < store_->count() ? store_->sector(n) : nullptr; }
+    bool writeSector(int n, const uint8_t* bytes) { return store_->writeSector(n, bytes); }
     bool checkWritable(std::string* error) const;
 
-    H17Disk& disk_;
+    std::unique_ptr<SectorStore> store_;
+
+private:
+    static std::unique_ptr<DiskFileSystem> open(std::unique_ptr<SectorStore> store, bool hardSectored,
+                                                std::string* error);
 };
 
 } // namespace h89

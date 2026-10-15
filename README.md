@@ -4,7 +4,7 @@ A Heathkit H89 emulator: portable C++ core, Objective-C++ front end on macOS,
 GLFW front end on Windows, OpenGL rendering on both. See [PLAN.md](PLAN.md) for
 the architecture and milestones.
 
-**Status:** milestones 0–3 and 5 are done, and 4 is mostly done.
+**Status:** milestones 0–3, 5 and 6 are done, and 4 is mostly done.
 - The Z80 passes ZEXDOC and ZEXALL, including undocumented flags.
 - The CPU board boots MTR-89 and MTR-90.
 - The H19 terminal is fully emulated: its own Z80 runs the real 444-46
@@ -12,6 +12,9 @@ the architecture and milestones.
   keyboard.
 - The H17 floppy controller boots HDOS 2.0 and Heath CP/M 2.2.03. Reading,
   writing and formatting (HDOS INIT) all work.
+- The H37 (Z-89-37, WD1797) controller boots HDOS 2.0 and CP/M 2.2.03 from
+  single-density disks. Single- and double-density reading, writing and
+  formatting (CP/M FORMAT) work.
 - The Mac app is interactive. The Windows build is written but untested.
 
 ## Running
@@ -22,21 +25,32 @@ folder on the command line: `H89-glfw.exe path\to\roms` (default `roms`).
 
 ### Disks
 
-H17 disk images (`.h8d`, 102,400 bytes) go in drives SY0:–SY2:.
+H17 disk images (`.h8d`, 102,400 bytes) go in drives SY0:–SY2:. H37 disk
+images go in drives DK0:–DK3:, either raw sector dumps (`.h37`, optionally
+ending in a geometry trailer like `SPT=10 SSZ=0256 TRK=40 SID=1 FM`) or
+ImageDisk files (`.imd`).
 - **Mac:** use the Disks menu (⌘O inserts into SY0:). Mounted disks are
-  remembered between launches.
+  remembered between launches. To boot from the H37, tick Machine › Boot from
+  H37 (DK0:); this sets SW501 section 4, as on the real board.
 - **Windows:** pass images after the ROM folder (`H89-glfw.exe roms hdos.h8d`),
-  or drop them on the window.
+  or drop them on the window. `.h8d` images fill SY0: onwards and others DK0:
+  onwards; if the first image is an H37 one, the machine boots from the H37.
 
 Writes go straight back to the image file, like a real disk. Tick "Write
 protected" in the Mac open dialog (or use `--ro` with `h89run`) to keep an
 image unchanged. To boot, type `B` then Return at the MTR-90 `H:` prompt.
 
+Formatting an H37 disk to a different geometry (for example CP/M FORMAT to
+double density) rewrites a raw image with the new geometry once every track
+has it; ImageDisk files are rewritten on every change.
+
 ### Copying files to and from disks
 
-HDOS 2.0 and Heath CP/M 2.2 disks can be read and changed from the host.
+HDOS 2.0 and Heath CP/M 2.2 disks can be read and changed from the host: H17
+disks, and single-sided H37 disks in single density (40 tracks) or double
+density (80 tracks, as CP/M FORMAT makes them).
 - **Mac:** Disks › SY*n*: › Show Files…, or Disks › Browse Disk Image… (⇧⌘O)
-  for any `.h8d`. Insert Files… (or drop files on the list) copies files onto
+  for any `.h8d`, `.h37` or `.imd` file. Insert Files… (or drop files on the list) copies files onto
   the disk. Extract or Extract All copies them to a folder on the Desktop named
   after the image. Delete removes them.
 - **Command line:** `h8dtool list|get|put|rm image.h8d ...` (see below).
@@ -86,8 +100,10 @@ from the first of `--roms <dir>`, `$H89_ROMS`, `./roms`, or `roms/` next to
 project folder or anywhere else.
 
 Options:
-- `--disk0/1/2 image.h8d`, `--ro` (mount disks write-protected)
-- `--sw501 hex` (default `20`), `--ram kb`, `--trace-io`
+- `--disk0/1/2 image.h8d`, `--dk0/1/2/3 image.h37|.imd` (H37 drives), `--ro`
+  (mount disks write-protected)
+- `--sw501 hex` (default `20`; `30` boots from the H37), `--ram kb`,
+  `--trace-io`
 - `--rom`, `--h17rom`, `--h19rom`, `--font` load individual ROMs instead.
   Without `--h19rom`/`--font`, the console serial port connects straight to
   your terminal.

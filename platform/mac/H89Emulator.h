@@ -2,6 +2,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Drives 0-2 are the H17's SY0:-SY2:, 3-6 the H37's DK0:-DK3:.
+static const NSInteger H89FirstH37Drive = 3;
+
 // H19 keys that don't produce a plain character (mirrors h89::H19Key).
 typedef NS_ENUM(NSInteger, H89Key) {
     H89KeyF1, H89KeyF2, H89KeyF3, H89KeyF4, H89KeyF5,
@@ -40,9 +43,18 @@ typedef NS_ENUM(NSInteger, H89Key) {
 // next -runFrame.
 - (const uint8_t*)framebuffer NS_RETURNS_INNER_POINTER;
 
-// H17 drives SY0:-SY2:. Writes go straight back to the image file unless
-// mounted read-only.
+// Floppy drives: 0-2 are the H17's SY0:-SY2: (hard-sectored .h8d images),
+// 3-6 the H37's DK0:-DK3: (soft-sectored .h37 / .imd images). Writes go
+// straight back to the image file unless mounted read-only.
 @property(nonatomic, readonly) NSInteger driveCount;
+// NO if the drive's controller isn't fitted (the H17 needs its ROM).
+- (BOOL)driveIsAvailable:(NSInteger)drive;
+- (BOOL)driveIsH37:(NSInteger)drive;
+// "SY0:" or "DK0:".
+- (NSString*)driveName:(NSInteger)drive;
+// Boot from the H37 (SW501 section 4) instead of the H17; takes effect at
+// the next boot.
+@property(nonatomic) BOOL bootFromH37;
 - (BOOL)insertDiskAtPath:(NSString*)path
                    drive:(NSInteger)drive
                 readOnly:(BOOL)readOnly

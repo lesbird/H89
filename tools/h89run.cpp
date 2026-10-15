@@ -1,6 +1,7 @@
 // Headless H89 in a text terminal.
 //
 //   h89run [--roms dir] [--disk0 f.h8d] [--disk1 f.h8d] [--disk2 f.h8d] [--ro]
+//          [--dk0 f.h37|f.imd] ... [--dk3 ...]   (H37 drives)
 //          [--rom MTR90.ROM] [--h17rom 444-19.ROM] [--h19rom 444-46.ROM --font 444-29.ROM]
 //          [--sw501 hex] [--ram kb]
 //          [--seconds n] [--type text] [--step "wait|keys"]... [--expect text]
@@ -49,6 +50,7 @@ namespace {
 [[noreturn]] void usage(const char* argv0) {
     std::fprintf(stderr,
                  "usage: %s [--roms dir] [--disk0 f.h8d] [--disk1 f.h8d] [--disk2 f.h8d] [--ro]\n"
+                 "          [--dk0 f.h37|f.imd] [--dk1 ...] [--dk2 ...] [--dk3 ...]\n"
                  "          [--rom <monitor.rom>] [--h17rom <rom>] [--h19rom <rom> --font <rom>]\n"
                  "          [--sw501 hex] [--ram kb]\n"
                  "          [--seconds n] [--type text] [--step \"wait|keys\"]... [--expect text]\n"
@@ -160,6 +162,7 @@ int main(int argc, char** argv) {
     bool traceIo = false;
     bool readOnly = false;
     std::string diskPaths[3];
+    std::string h37Paths[4];
     std::string romDir;
 
     for (int i = 1; i < argc; ++i) {
@@ -181,6 +184,10 @@ int main(int argc, char** argv) {
             diskPaths[1] = argv[++i];
         } else if (arg("--disk2")) {
             diskPaths[2] = argv[++i];
+        } else if (std::strncmp(argv[i], "--dk", 4) == 0 && argv[i][4] >= '0' && argv[i][4] <= '3' &&
+                   argv[i][5] == 0 && i + 1 < argc) {
+            int drive = argv[i][4] - '0';
+            h37Paths[drive] = argv[++i];
         } else if (std::strcmp(argv[i], "--ro") == 0) {
             readOnly = true;
         } else if (arg("--screenshot")) {
@@ -247,6 +254,14 @@ int main(int argc, char** argv) {
             return 2;
         }
         if (!machine.h17()->insertDisk(d, diskPaths[d], readOnly, &err)) {
+            std::fprintf(stderr, "%s\n", err.c_str());
+            return 2;
+        }
+    }
+    for (int d = 0; d < 4; ++d) {
+        if (h37Paths[d].empty()) continue;
+        std::string err;
+        if (!machine.h37()->insertDisk(d, h37Paths[d], readOnly, &err)) {
             std::fprintf(stderr, "%s\n", err.c_str());
             return 2;
         }

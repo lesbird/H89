@@ -33,9 +33,11 @@ add_library(h89core STATIC
     core/cpu/Z80.cpp
     core/cpu/Z80Disasm.cpp
     core/devices/H17.cpp
+    core/devices/H37.cpp
     core/devices/Ins8250.cpp
     core/media/DiskFiles.cpp
     core/media/H17Disk.cpp
+    core/media/SoftDisk.cpp
     core/terminal/Crtc6845.cpp
     core/terminal/H19.cpp
     core/Machine.cpp
@@ -139,6 +141,11 @@ if(H89_BUILD_TESTS)
     target_link_libraries(diskfiles_tests PRIVATE h89core)
     add_test(NAME diskfiles_tests COMMAND diskfiles_tests)
 
+    add_executable(h37_tests tests/h37_tests.cpp)
+    target_compile_options(h37_tests PRIVATE ${H89_WARNINGS})
+    target_link_libraries(h37_tests PRIVATE h89core)
+    add_test(NAME h37_tests COMMAND h37_tests WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
     # Boot tests against real ROMs, registered only when they are present in
     # roms/ (they are copyrighted and not distributed).
     # Finds one raw ROM image (not an Intel HEX copy) matching `pattern`.
@@ -179,6 +186,8 @@ if(H89_BUILD_TESTS)
     # Disk boot tests: images in disks/ are mounted read-only.
     file(GLOB H89_HDOS_DISK ${CMAKE_SOURCE_DIR}/disks/*HDOS*.[hH]8[dD])
     file(GLOB H89_CPM_DISK ${CMAKE_SOURCE_DIR}/disks/*CPM*.[hH]8[dD])
+    file(GLOB H89_H37_HDOS_DISK ${CMAKE_SOURCE_DIR}/disks/*HDOS*.[hH]37)
+    file(GLOB H89_H37_CPM_DISK ${CMAKE_SOURCE_DIR}/disks/*CPM*.[hH]37)
     if(H89_MTR90_ROM AND H89_H17_ROM AND H89_H19_ROM AND H89_H19_FONT)
         set(H89_FULL_MACHINE --rom ${H89_MTR90_ROM} --h17rom ${H89_H17_ROM}
             --h19rom ${H89_H19_ROM} --font ${H89_H19_FONT})
@@ -187,6 +196,18 @@ if(H89_BUILD_TESTS)
             add_test(NAME boot_hdos COMMAND h89run ${H89_FULL_MACHINE} --ro --disk0 ${disk}
                      --seconds 120 --step "H: |B\\r" --step "ACTION?|\\r"
                      --step ")?|14-Oct-86\\r" --step ">|CAT\\r" --expect "Files, Using")
+        endif()
+        # H37 boots: SW501 30 = boot from the device at 170Q (78h).
+        if(H89_H37_HDOS_DISK)
+            list(GET H89_H37_HDOS_DISK 0 disk)
+            add_test(NAME boot_h37_hdos COMMAND h89run ${H89_FULL_MACHINE} --sw501 30 --ro --dk0 ${disk}
+                     --seconds 120 --step "H: |B\\r" --step "ACTION?|\\r"
+                     --step ")?|14-Oct-86\\r" --step ">|CAT\\r" --expect "Files, Using")
+        endif()
+        if(H89_H37_CPM_DISK)
+            list(GET H89_H37_CPM_DISK 0 disk)
+            add_test(NAME boot_h37_cpm COMMAND h89run ${H89_FULL_MACHINE} --sw501 30 --ro --dk0 ${disk}
+                     --seconds 60 --step "H: |B\\r" --step "A>|DIR\\r" --expect "PIP      COM")
         endif()
         if(H89_CPM_DISK)
             list(GET H89_CPM_DISK 0 disk)

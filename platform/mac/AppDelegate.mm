@@ -5,6 +5,7 @@
 #import "H89View.h"
 
 static NSString* const kRomDirectoryKey = @"RomDirectory";
+static NSString* const kBootFromH37Key = @"BootFromH37";
 
 // Saved disk for drive n: "Disk<n>Path" and "Disk<n>ReadOnly".
 static NSString* DiskKey(NSInteger drive, NSString* field) {
@@ -80,6 +81,7 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     emulator.bellHandler = ^{ [weakSelf ringBell]; };
     _emulator = emulator;
     _view.emulator = emulator;
+    emulator.bootFromH37 = [NSUserDefaults.standardUserDefaults boolForKey:kBootFromH37Key];
     [self restoreDisks];
     for (H89DiskBrowser* browser in _browsers) {
         browser.emulator = emulator;
@@ -94,7 +96,7 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
     for (NSInteger d = 0; d < _emulator.driveCount; ++d) {
         NSString* path = [defaults stringForKey:DiskKey(d, @"Path")];
-        if (!path) continue;
+        if (!path || ![_emulator driveIsAvailable:d]) continue;
         if (![_emulator insertDiskAtPath:path drive:d readOnly:[defaults boolForKey:DiskKey(d, @"ReadOnly")] error:nil])
             [defaults removeObjectForKey:DiskKey(d, @"Path")];
     }
@@ -110,7 +112,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     panel.canChooseDirectories = NO;
     panel.allowsMultipleSelection = NO;
     panel.prompt = @"Insert";
-    panel.message = [NSString stringWithFormat:@"Choose an H17 disk image (.h8d) for SY%ld:", (long)drive];
+    panel.message = [_emulator driveIsH37:drive]
+                        ? [NSString stringWithFormat:@"Choose an H37 disk image (.h37 or .imd) for %@",
+                                                     [_emulator driveName:drive]]
+                        : [NSString stringWithFormat:@"Choose an H17 disk image (.h8d) for %@", [_emulator driveName:drive]];
     NSButton* readOnly = [NSButton checkboxWithTitle:@"Write protected" target:nil action:nil];
     [readOnly sizeToFit];
     panel.accessoryView = readOnly;
@@ -169,49 +174,61 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     [self browseDiskAtPath:panel.URL.path];
 }
 
+// Shows the boot drive's disk in the title.
 - (void)updateTitle {
-    NSString* sy0 = [_emulator diskPathForDrive:0];
-    _window.title = sy0 ? [NSString stringWithFormat:@"Heathkit H89 — SY0: %@", sy0.lastPathComponent]
-                        : @"Heathkit H89";
+    NSInteger boot = _emulator.bootFromH37 ? H89FirstH37Drive : 0;
+    NSString* path = [_emulator diskPathForDrive:boot];
+    _window.title = path ? [NSString stringWithFormat:@"Heathkit H89 — %@ %@", [_emulator driveName:boot],
+                                                      path.lastPathComponent]
+                         : @"Heathkit H89";
 }
 
-// Rebuilds the Disks menu each time it opens so it shows what is mounted.
+- (void)toggleBootDevice:(id)sender {
+    _emulator.bootFromH37 = !_emulator.bootFromH37;
+    [NSUserDefaults.standardUserDefaults setBool:_emulator.bootFromH37 forKey:kBootFromH37Key];
+    [self updateTitle];
+}
+
+// Rebuilds the Disks menu each time it opens so it shows what is mounted:
+// a submenu per drive, grouped by controller.
 - (void)menuNeedsUpdate:(NSMenu*)menu {
     if (menu != _disksMenu) return;
     [menu removeAllItems];
     [menu addItemWithTitle:@"Browse Disk Image…" action:@selector(browseDiskImage:) keyEquivalent:@"O"].target = self;
-    [menu addItem:[NSMenuItem separatorItem]];
-    if (_emulator.driveCount == 0) {
-        [menu addItemWithTitle:@"No H17 Controller (444-19 ROM missing)" action:nil keyEquivalent:@""].enabled = NO;
-        return;
-    }
     for (NSInteger d = 0; d < _emulator.driveCount; ++d) {
+        BOOL h37 = [_emulator driveIsH37:d];
+        if (d == 0 || d == H89FirstH37Drive) {
+            [menu addItem:[NSMenuItem separatorItem]];
+            NSString* title = h37 ? @"H37 (soft-sectored)" : @"H17 (hard-sectored)";
+            if (![_emulator driveIsAvailable:d])
+                title = h37 ? @"No H37 controller" : @"No H17 controller (444-19 ROM missing)";
+            [menu addItemWithTitle:title action:nil keyEquivalent:@""].enabled = NO;
+        }
+        if (![_emulator driveIsAvailable:d]) continue;
+
         NSString* path = [_emulator diskPathForDrive:d];
-        NSString* status = path ? [NSString stringWithFormat:@"SY%ld:  %@%@", (long)d, path.lastPathComponent,
-                                                            [_emulator diskIsReadOnlyInDrive:d] ? @" (write protected)" : @""]
-                                : [NSString stringWithFormat:@"SY%ld:  empty", (long)d];
-        [menu addItemWithTitle:status action:nil keyEquivalent:@""].enabled = NO;
-        NSMenuItem* insert = [menu addItemWithTitle:@"Insert Disk…"
-                                             action:@selector(insertDisk:)
-                                      keyEquivalent:d == 0 ? @"o" : @""];
+        NSString* title = path ? [NSString stringWithFormat:@"%@  %@%@", [_emulator driveName:d], path.lastPathComponent,
+                                                           [_emulator diskIsReadOnlyInDrive:d] ? @" (write protected)" : @""]
+                               : [NSString stringWithFormat:@"%@  empty", [_emulator driveName:d]];
+        NSMenuItem* item = [menu addItemWithTitle:title action:nil keyEquivalent:@""];
+        NSMenu* sub = [[NSMenu alloc] initWithTitle:title];
+        sub.autoenablesItems = NO;
+        NSMenuItem* insert = [sub addItemWithTitle:@"Insert Disk…"
+                                            action:@selector(insertDisk:)
+                                     keyEquivalent:d == 0 ? @"o" : @""];
         insert.tag = d;
         insert.target = self;
-        insert.indentationLevel = 1;
-        NSMenuItem* files = [menu addItemWithTitle:@"Show Files…"
-                                            action:path ? @selector(showDriveFiles:) : nil
-                                     keyEquivalent:@""];
+        NSMenuItem* files = [sub addItemWithTitle:@"Show Files…" action:@selector(showDriveFiles:) keyEquivalent:@""];
         files.tag = d;
         files.target = self;
         files.enabled = path != nil;
-        files.indentationLevel = 1;
-        NSMenuItem* eject = [menu addItemWithTitle:@"Eject"
-                                            action:path ? @selector(ejectDisk:) : nil
-                                     keyEquivalent:d == 0 ? @"e" : @""];
+        NSMenuItem* eject = [sub addItemWithTitle:@"Eject"
+                                           action:@selector(ejectDisk:)
+                                    keyEquivalent:d == 0 ? @"e" : @""];
         eject.tag = d;
         eject.target = self;
         eject.enabled = path != nil;
-        eject.indentationLevel = 1;
-        if (d + 1 < _emulator.driveCount) [menu addItem:[NSMenuItem separatorItem]];
+        item.submenu = sub;
     }
 }
 
@@ -257,6 +274,9 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
+    if (item.action == @selector(toggleBootDevice:)) {
+        item.state = _emulator.bootFromH37 ? NSControlStateValueOn : NSControlStateValueOff;
+    }
     if (item.action == @selector(choosePhosphor:)) {
         item.state = item.tag == _view.phosphor ? NSControlStateValueOn : NSControlStateValueOff;
     }
@@ -278,6 +298,11 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSMenuItem* machineItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
     NSMenu* machineMenu = [[NSMenu alloc] initWithTitle:@"Machine"];
     [machineMenu addItemWithTitle:@"Reset" action:@selector(reset:) keyEquivalent:@"r"].target = self;
+    [machineMenu addItem:[NSMenuItem separatorItem]];
+    // SW501 section 4: which controller the monitor's B command boots.
+    [machineMenu addItemWithTitle:@"Boot from H37 (DK0:)"
+                           action:@selector(toggleBootDevice:)
+                    keyEquivalent:@""].target = self;
     [machineMenu addItem:[NSMenuItem separatorItem]];
     [machineMenu addItemWithTitle:@"Choose ROM Folder…"
                            action:@selector(chooseRomFolder:)

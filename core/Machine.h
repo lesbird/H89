@@ -2,6 +2,7 @@
 
 #include "cpu/Z80.h"
 #include "devices/H17.h"
+#include "devices/H37.h"
 #include "devices/Ins8250.h"
 #include "terminal/H19.h"
 
@@ -27,6 +28,7 @@ constexpr uint8_t kAutoBoot = 0x80;
 struct MachineConfig {
     std::vector<uint8_t> monitorRom; // 2K or 4K at 0000h (MTR-88/89/90)
     std::vector<uint8_t> h17Rom;     // 2K at 1800h; empty means no H-88-1 controller
+    bool h37 = true;                 // Z-89-37 soft-sectored controller at 78h
     int ramKB = 64;                  // 16, 32, 48 or 64
     uint8_t sw501 = sw501::kNormal;
     // Built-in H19 terminal. Without its ROMs the console serial port is
@@ -40,7 +42,7 @@ std::vector<uint8_t> loadFile(const std::string& path, std::string* error = null
 
 // The H89 computer: CPU board (Z80, ROM, RAM, GPP, 2 ms clock, console 8250)
 // wired to the built-in H19 terminal board, plus the H-88-1 (H17) floppy
-// controller when its ROM is present.
+// controller when its ROM is present and the Z-89-37 (H37) controller.
 class Machine : private Z80Bus {
 public:
     static constexpr int kCpuHz = 2'048'000;
@@ -75,10 +77,14 @@ public:
     std::function<void(bool write, uint8_t port, uint8_t value)> ioTrace;
 
     const MachineConfig& config() const { return config_; }
+    // SW501 is read live by the monitor, so changes apply at the next boot.
+    void setSw501(uint8_t value) { config_.sw501 = value; }
     // The terminal, or null when MachineConfig has no terminal ROMs.
     H19* terminal() { return terminal_.get(); }
     // The H17 floppy controller, or null without the H17 ROM.
     H17* h17() { return h17_.get(); }
+    // The H37 floppy controller, or null if not configured.
+    H37* h37() { return h37_.get(); }
     // The terminal's screen, or a test pattern without a terminal.
     const Framebuffer& framebuffer() const { return terminal_ ? terminal_->framebuffer() : fb_; }
     uint64_t frameCount() const { return frames_; }
@@ -106,6 +112,7 @@ private:
     Ins8250 console_{kCpuHz};
     std::unique_ptr<H19> terminal_;
     std::unique_ptr<H17> h17_;
+    std::unique_ptr<H37> h37_;
     int terminalLag_ = 0; // cycles the terminal is behind the CPU board
     uint8_t gpp_ = 0;
     int timerCountdown_ = kTimerCycles;

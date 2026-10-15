@@ -14,6 +14,8 @@ constexpr uint8_t rst(int n) { return 0xC7 | (n << 3); }
 
 constexpr int kConsoleRst = 3;
 constexpr int kTimerRst = 1;
+constexpr int kH37Rst = 4;
+constexpr uint8_t kOpEI = 0xFB;
 
 } // namespace
 
@@ -30,6 +32,7 @@ Machine::Machine(MachineConfig config) : config_(std::move(config)), cpu_(*this)
     int kb = std::clamp(config_.ramKB, 16, 64);
     ramTop_ = kb == 64 ? 0x10000 : 0x2000 + kb * 1024;
     if (!config_.h17Rom.empty()) h17_ = std::make_unique<H17>();
+    if (config_.h37) h37_ = std::make_unique<H37>();
     if (config_.hasTerminal()) {
         terminal_ = std::make_unique<H19>(config_.terminal);
         terminal_->serialOut = [this](uint8_t b) { console_.receive(b); };
@@ -55,6 +58,7 @@ void Machine::reset() {
     frames_ = 0;
     if (terminal_) terminal_->reset();
     if (h17_) h17_->reset();
+    if (h37_) h37_->reset();
     terminalLag_ = 0;
     updateIrq();
 }
@@ -87,6 +91,7 @@ uint8_t Machine::ioRead(uint16_t port) {
 
 uint8_t Machine::readPort(uint8_t p) {
     if (h17_ && p >= 0x7C && p <= 0x7F) return h17_->read(p & 3);
+    if (h37_ && p >= 0x78 && p <= 0x7B) return h37_->read(p & 3);
     switch (p) {
     case 0xE8: case 0xE9: case 0xEA: case 0xEB:
     case 0xEC: case 0xED: case 0xEE: case 0xEF:
@@ -108,6 +113,11 @@ void Machine::ioWrite(uint16_t port, uint8_t value) {
     if (ioTrace) ioTrace(true, p, value);
     if (h17_ && p >= 0x7C && p <= 0x7F) {
         h17_->write(p & 3, value);
+        return;
+    }
+    if (h37_ && p >= 0x78 && p <= 0x7B) {
+        h37_->write(p & 3, value);
+        updateIrq();
         return;
     }
     switch (p) {
@@ -135,9 +145,18 @@ void Machine::writeGpp(uint8_t value) {
 }
 
 // Interrupt levels go through a priority encoder; the highest level wins.
+// The Z-89-37 sits in front: its DRQ is answered with EI (just ending a
+// HALT), its INTRQ with RST 4, and while its DRQ interrupts are enabled the
+// other levels are blocked.
 uint8_t Machine::intAck() {
     uint8_t op;
-    if (console_.irq()) {
+    if (h37_ && h37_->drqInterrupt()) {
+        op = kOpEI;
+    } else if (h37_ && h37_->irq()) {
+        op = rst(kH37Rst);
+    } else if (h37_ && h37_->blocksInterrupts()) {
+        op = 0x00; // NOP: nothing is asking
+    } else if (console_.irq()) {
         op = rst(kConsoleRst);
     } else if (timerPending_) {
         timerPending_ = false; // acknowledge clears the clock flip-flop
@@ -150,7 +169,12 @@ uint8_t Machine::intAck() {
 }
 
 void Machine::updateIrq() {
-    cpu_.setIrq(timerPending_ || console_.irq());
+    bool others = timerPending_ || console_.irq();
+    if (h37_) {
+        if (h37_->blocksInterrupts()) others = false;
+        others = others || h37_->irq() || h37_->drqInterrupt();
+    }
+    cpu_.setIrq(others);
 }
 
 int Machine::run(int cycles) {
@@ -160,6 +184,7 @@ int Machine::run(int cycles) {
         done += t;
         console_.tick(t);
         if (h17_) h17_->tick(t);
+        if (h37_) h37_->tick(t);
         if (gpp_ & GPP_TIMER_ENABLE) {
             timerCountdown_ -= t;
             if (timerCountdown_ <= 0) {

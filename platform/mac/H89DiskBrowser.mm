@@ -4,6 +4,7 @@
 
 #include "media/DiskFiles.h"
 #include "media/H17Disk.h"
+#include "media/SoftDisk.h"
 
 #include <memory>
 #include <vector>
@@ -23,9 +24,12 @@ static NSString* CanonicalPath(NSString* path) {
 
 @implementation H89DiskBrowser {
     NSString* _path;
-    h89::H17Disk _ownDisk; // the image, read fresh, when no drive holds it
-    h89::H17Disk* _disk;   // _ownDisk or a drive's disk
-    NSInteger _drive;      // drive holding the image, or -1
+    // The image, read fresh, when no drive holds it: .h8d files are H17
+    // disks, anything else soft-sectored (H37).
+    h89::H17Disk _ownH17;
+    h89::SoftDisk _ownSoft;
+    bool _readOnly;
+    NSInteger _drive; // drive holding the image, or -1
     std::unique_ptr<h89::DiskFileSystem> _fs;
     std::vector<h89::DiskFile> _files;
 
@@ -147,33 +151,35 @@ static NSString* CanonicalPath(NSString* path) {
 // Finds the image: through the drive that holds it, else read from the file.
 - (BOOL)openDisk:(NSString**)error {
     _fs.reset();
-    _disk = nullptr;
     _drive = -1;
     NSString* canonical = CanonicalPath(_path);
-    for (NSInteger d = 0; d < _emulator.driveCount; ++d) {
-        h89::H17Disk* disk = [_emulator diskForDrive:d];
-        if (disk && disk->loaded() && [CanonicalPath(@(disk->path().c_str())) isEqualToString:canonical]) {
-            _disk = disk;
-            _drive = d;
-            break;
-        }
-    }
     std::string message;
-    if (!_disk) {
-        BOOL writable = [NSFileManager.defaultManager isWritableFileAtPath:_path];
-        if (!_ownDisk.load(_path.fileSystemRepresentation, !writable, &message)) {
-            *error = @(message.c_str());
-            return NO;
-        }
-        _disk = &_ownDisk;
+    for (NSInteger d = 0; d < _emulator.driveCount; ++d) {
+        NSString* mounted = [_emulator diskPathForDrive:d];
+        if (!mounted || ![CanonicalPath(mounted) isEqualToString:canonical]) continue;
+        _drive = d;
+        _readOnly = [_emulator diskIsReadOnlyInDrive:d];
+        if (h89::SoftDisk* soft = [_emulator softDiskForDrive:d]) _fs = h89::DiskFileSystem::open(*soft, &message);
+        else _fs = h89::DiskFileSystem::open(*[_emulator diskForDrive:d], &message);
+        break;
     }
-    _fs = h89::DiskFileSystem::open(*_disk, &message);
+    if (_drive < 0) {
+        _readOnly = ![NSFileManager.defaultManager isWritableFileAtPath:_path];
+        bool loaded;
+        if ([_path.pathExtension caseInsensitiveCompare:@"h8d"] == NSOrderedSame) {
+            loaded = _ownH17.load(_path.fileSystemRepresentation, _readOnly, &message);
+            if (loaded) _fs = h89::DiskFileSystem::open(_ownH17, &message);
+        } else {
+            loaded = _ownSoft.load(_path.fileSystemRepresentation, _readOnly, &message);
+            if (loaded) _fs = h89::DiskFileSystem::open(_ownSoft, &message);
+        }
+    }
     if (!_fs) *error = @(message.c_str());
     return _fs != nullptr;
 }
 
 - (BOOL)canWrite {
-    return _fs && !_disk->readOnly();
+    return _fs && !_readOnly;
 }
 
 - (void)refresh {
@@ -183,20 +189,20 @@ static NSString* CanonicalPath(NSString* path) {
     BOOL cpm = _fs && _fs->format() == h89::DiskFileSystem::Format::Cpm;
 
     NSMutableString* info = [NSMutableString stringWithString:_path.lastPathComponent];
-    if (_drive >= 0) [info appendFormat:@" (in SY%ld:)", (long)_drive];
+    if (_drive >= 0) [info appendFormat:@" (in %@)", [_emulator driveName:_drive]];
     if (_fs) {
         [info appendFormat:@" — %s\n%zu files, ", _fs->description().c_str(), _files.size()];
         uint32_t freeBytes = _fs->freeBytes();
         if (cpm) [info appendFormat:@"%uK free", freeBytes / 1024];
         else [info appendFormat:@"%u sectors free", freeBytes / h89::H17Disk::kSectorSize];
-        if (_disk->readOnly()) [info appendString:@" — write protected"];
+        if (_readOnly) [info appendString:@" — write protected"];
     } else {
         [info appendFormat:@"\n%@", error];
     }
     _infoLabel.stringValue = info;
 
     NSString* hint = @"";
-    if (_fs && _drive >= 0 && !_disk->readOnly()) {
+    if (_fs && _drive >= 0 && !_readOnly) {
         hint = cpm ? @"This disk is in a drive. After inserting or deleting files, warm boot CP/M (Control-C at the "
                      @"A> prompt) so it sees the change."
                    : @"This disk is in a drive. After inserting or deleting files, DISMOUNT and MOUNT it in HDOS "

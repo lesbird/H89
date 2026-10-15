@@ -1,15 +1,19 @@
 // Windows (and Linux) front end: GLFW window + OpenGL 3.3 core.
 //
-//   H89-glfw [rom-folder [sy0.h8d [sy1.h8d [sy2.h8d]]]]
+//   H89-glfw [rom-folder [disk-image...]]
 //
-// The ROM folder defaults to "roms" in the working directory. Disk images
-// can also be dropped on the window: they fill SY0:, SY1:, SY2: in order.
+// The ROM folder defaults to "roms" in the working directory. H17 images
+// (.h8d) fill SY0:-SY2: in order and H37 images (.h37, .imd) DK0:-DK3:; if
+// the first image is an H37 one the machine boots from the H37. Images can
+// also be dropped on the window.
 
 #include "GL.h" // must precede glfw3.h so GLFW doesn't pull in its own GL header
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
 #include "GLRenderer.h"
+
+#include <cctype>
 #include "Machine.h"
 #include "RomSet.h"
 
@@ -113,18 +117,35 @@ void onKey(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) 
     }
 }
 
-void insertDisk(App& app, int drive, const char* path) {
-    std::string err;
-    if (!app.machine->h17()) {
-        showError("This machine has no H17 controller (444-19 ROM missing).");
-    } else if (!app.machine->h17()->insertDisk(drive, path, false, &err)) {
-        showError(err);
+bool isH17Image(const std::string& path) {
+    std::string ext = path.size() >= 4 ? path.substr(path.size() - 4) : "";
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".h8d";
+}
+
+// Mounts images in order: H17 ones from SY0:, H37 ones from DK0:.
+void insertDisks(App& app, int count, const char* const* paths) {
+    int h17 = 0, h37 = 0;
+    for (int i = 0; i < count; ++i) {
+        std::string err;
+        bool hard = isH17Image(paths[i]);
+        if (i == 0) {
+            uint8_t sw = app.machine->config().sw501 & ~h89::sw501::kBootFrom170;
+            app.machine->setSw501(hard ? sw : (sw | h89::sw501::kBootFrom170));
+        }
+        if (hard) {
+            if (!app.machine->h17()) showError("This machine has no H17 controller (444-19 ROM missing).");
+            else if (h17 < h89::H17::kDrives && !app.machine->h17()->insertDisk(h17++, paths[i], false, &err))
+                showError(err);
+        } else if (h37 < h89::H37::kDrives && !app.machine->h37()->insertDisk(h37++, paths[i], false, &err)) {
+            showError(err);
+        }
     }
 }
 
 void onDrop(GLFWwindow* window, int count, const char** paths) {
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
-    for (int i = 0; i < count && i < h89::H17::kDrives; ++i) insertDisk(*app, i, paths[i]);
+    insertDisks(*app, count, paths);
 }
 
 void onChar(GLFWwindow* window, unsigned int codepoint) {
@@ -142,7 +163,7 @@ int main(int argc, char** argv) {
     std::string romDir = argc > 1 ? argv[1] : "roms";
     h89::RomScan scan = h89::scanRomDirectory(romDir);
     if (!scan.ok()) {
-        showError(scan.error + "\n\nUsage: H89-glfw [rom-folder [sy0.h8d [sy1.h8d [sy2.h8d]]]]");
+        showError(scan.error + "\n\nUsage: H89-glfw [rom-folder [disk-image...]]");
         return 1;
     }
 
@@ -173,7 +194,7 @@ int main(int argc, char** argv) {
         App app;
         app.machine = std::make_unique<h89::Machine>(std::move(scan.config));
         app.machine->terminal()->onBell = ringBell;
-        for (int d = 0; d < h89::H17::kDrives && d + 2 < argc; ++d) insertDisk(app, d, argv[d + 2]);
+        if (argc > 2) insertDisks(app, argc - 2, argv + 2);
         if (!app.renderer.init()) {
             glfwTerminate();
             return 1;
