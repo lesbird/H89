@@ -27,6 +27,53 @@ typedef NS_ENUM(NSInteger, H89Key) {
                                      memoryKB:(NSInteger)memoryKB
                                         error:(NSError**)error NS_DESIGNATED_INITIALIZER;
 - (nullable instancetype)initWithRomDirectory:(NSString*)directory error:(NSError**)error;
+// Just the H19, as a terminal for a real computer on a host serial port (see
+// -connectTerminal:). Only the H19 ROMs (444-46, 444-29) are needed.
+- (nullable instancetype)initTerminalWithRomDirectory:(NSString*)directory
+                                                error:(NSError**)error NS_DESIGNATED_INITIALIZER;
+
+// YES for a terminal on its own: no computer, no drives, no H89 serial card,
+// no states and no debugger.
+@property(nonatomic, readonly) BOOL terminalOnly;
+// Terminal only: opens the host serial port, "DEVICE[:BAUD[:FORMAT[:rtscts]]]"
+// such as "/dev/cu.usbserial-1410:115200:8N1". The line runs at that rate,
+// whatever SW401 says. If the port can't be opened the terminal runs
+// anyway and the port is retried every second; that also happens if it goes
+// away (an adapter unplugged).
+- (BOOL)connectTerminal:(NSString*)spec error:(NSError**)error;
+- (void)disconnectTerminal;
+// "/dev/cu.usbserial-1410 at 115200 8N1", or why it isn't connected.
+@property(nonatomic, readonly) NSString* terminalStatus;
+// The serial ports on this Mac (/dev/cu.*).
++ (NSArray<NSString*>*)hostSerialPorts;
+
+// File transfers over the terminal's serial port (terminal only). One runs at
+// a time; while a protocol transfer runs, the keyboard is ignored.
+typedef NS_ENUM(NSInteger, H89Upload) { H89UploadText, H89UploadXmodem, H89UploadXmodem1K, H89UploadZmodem };
+// Text files: line endings (0 CR, 1 CR LF, 2 LF, 3 unchanged) and pauses.
+- (void)setTextLineEnding:(NSInteger)ending charDelay:(NSInteger)charMs lineDelay:(NSInteger)lineMs;
+// Text and XMODEM take one file; ZMODEM takes several.
+- (BOOL)startUpload:(H89Upload)kind paths:(NSArray<NSString*>*)paths error:(NSError**)error;
+- (BOOL)startXmodemDownloadTo:(NSString*)path error:(NSError**)error;
+// The sender names each file: transferOfferedName then asks where it goes.
+- (BOOL)startZmodemDownload:(NSError**)error;
+- (void)cancelTransfer;
+// Forgets a finished transfer.
+- (void)clearTransfer;
+@property(nonatomic, readonly) BOOL transferExists;
+@property(nonatomic, readonly) BOOL transferRunning;
+@property(nonatomic, readonly) BOOL transferSucceeded;
+@property(nonatomic, readonly) NSString* transferTitle;
+@property(nonatomic, readonly) NSString* transferStatus;
+// 0 to 1, or -1 when the size isn't known.
+@property(nonatomic, readonly) double transferFraction;
+// A ZMODEM download was offered this file: answer with -setTransferSavePath:
+// (nil skips it).
+@property(nonatomic, readonly, nullable) NSString* transferOfferedName;
+- (void)setTransferSavePath:(nullable NSString*)path;
+// The H19's SW401 (in H89 mode also its baud rate) and SW402. Changing them
+// resets the terminal, as switching it off and on would.
+- (void)setTerminalSW401:(NSInteger)sw401 SW402:(NSInteger)sw402;
 - (instancetype)init NS_UNAVAILABLE;
 
 // Which ROM files were loaded, one per line.

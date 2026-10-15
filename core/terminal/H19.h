@@ -77,6 +77,29 @@ public:
     // Serial line to the computer.
     std::function<void(uint8_t)> serialOut;
     void serialIn(uint8_t byte) { ace_.receive(byte); }
+    // True when another byte can be given to serialIn() without overrunning:
+    // the firmware has read the last one.
+    bool serialReady() const { return ace_.readyForInput(); }
+    // Runs the serial line at `baud` instead of the rate SW401 selects (0 =
+    // back to SW401), for a line that is really a host serial port.
+    void setLineRate(int baud);
+    // The UART's outputs: break (LCR bit 6), DTR and RTS (MCR bits 0-1).
+    bool sendingBreak() const { return (ace_.lineControl() & 0x40) != 0; }
+    uint8_t modemControl() const { return ace_.modemControl(); }
+    // CTS, DSR, RI, DCD as MSR bits 4-7 (all but RI are held on by default).
+    void setModemInputs(uint8_t msrHighNibble) { ace_.setModemInputs(msrHighNibble); }
+
+    // The switches; changes take effect at the next reset.
+    const H19Config& config() const { return config_; }
+    void setSwitches(uint8_t sw401, uint8_t sw402) { config_.sw401 = sw401, config_.sw402 = sw402; }
+    // Runs at least `cycles` CPU cycles; returns the number run.
+    int run(int cycles);
+
+    // The firmware sends XOFF (13h) when its input buffer is nearly full and
+    // XON (11h) when it has room again, and the same codes for Ctrl-S and
+    // Ctrl-Q typed on the keyboard. When one of them is sent, this says
+    // whether it was typed (and counts it off).
+    bool takeTypedFlowKey(uint8_t code);
 
     // Keyboard. Keystrokes are queued and handed to the firmware one at a
     // time, like the keyboard encoder's strobe.
@@ -136,6 +159,7 @@ private:
     int keyGapCycles_ = 0;
     bool breakDown_ = false;
     bool offline_ = false;
+    int typedXoff_ = 0, typedXon_ = 0; // typed, not yet sent
 
     // Video timing
     int frameCycle_ = 0;

@@ -130,8 +130,28 @@ void H19::ioWrite(uint16_t port, uint8_t value) {
     }
 }
 
+void H19::setLineRate(int baud) {
+    // 10 bits a character: start, 8 data (or 7 + parity), stop.
+    ace_.setFixedCharCycles(baud > 0 ? std::max(1, static_cast<int>(int64_t(10) * kCpuHz / baud)) : 0);
+}
+
+int H19::run(int cycles) {
+    int done = 0;
+    while (done < cycles) done += step();
+    return done;
+}
+
+bool H19::takeTypedFlowKey(uint8_t code) {
+    int& n = code == 0x13 ? typedXoff_ : typedXon_;
+    if (n == 0) return false;
+    --n;
+    return true;
+}
+
 void H19::typeChar(uint8_t ascii) {
     ascii &= 0x7F;
+    if (ascii == 0x13) ++typedXoff_;
+    if (ascii == 0x11) ++typedXon_;
     switch (ascii) {
     case 0x08: case 0x09: case 0x0A: case 0x0D: case 0x1B: case 0x7F:
         // Keys with their own position on the keyboard

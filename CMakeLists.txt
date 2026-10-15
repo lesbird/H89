@@ -55,12 +55,15 @@ target_compile_options(h89core PRIVATE ${H89_WARNINGS})
 add_library(h89host STATIC
     host/AppFiles.cpp
     host/SerialHost.cpp
+    host/FileTransfer.cpp
+    host/SerialPort.cpp
+    host/TerminalLink.cpp
 )
 target_include_directories(h89host PUBLIC host)
 target_link_libraries(h89host PUBLIC h89core)
 target_compile_options(h89host PRIVATE ${H89_WARNINGS})
 if(WIN32)
-    target_link_libraries(h89host PUBLIC ws2_32 shell32)
+    target_link_libraries(h89host PUBLIC ws2_32 shell32 advapi32)
 endif()
 
 # --- OpenGL renderer ----------------------------------------------------------
@@ -119,6 +122,7 @@ if(APPLE)
         platform/mac/H89Emulator.mm
         platform/mac/H89DiskBrowser.mm
         platform/mac/H89Preferences.mm
+        platform/mac/H89TransferPanel.mm
         platform/mac/H89.icns
         ${H89_BUNDLED_ROMS}
         ${H89_BUNDLED_DISKS}
@@ -252,6 +256,11 @@ if(H89_BUILD_TESTS)
     target_link_libraries(appfiles_tests PRIVATE h89host)
     add_test(NAME appfiles_tests COMMAND appfiles_tests)
 
+    add_executable(transfer_tests tests/transfer_tests.cpp)
+    target_compile_options(transfer_tests PRIVATE ${H89_WARNINGS})
+    target_link_libraries(transfer_tests PRIVATE h89host)
+    add_test(NAME transfer_tests COMMAND transfer_tests)
+
     add_executable(h37_tests tests/h37_tests.cpp)
     target_compile_options(h37_tests PRIVATE ${H89_WARNINGS})
     target_link_libraries(h37_tests PRIVATE h89core)
@@ -288,6 +297,15 @@ if(H89_BUILD_TESTS)
     h89_find_rom(H89_H19_FONT *444-29*)
     if(H89_H19_ROM AND H89_H19_FONT)
         add_test(NAME h19_tests COMMAND h19_tests ${CMAKE_SOURCE_DIR}/roms)
+        if(NOT WIN32)
+            add_executable(terminal_link_tests tests/terminal_link_tests.cpp)
+            target_compile_options(terminal_link_tests PRIVATE ${H89_WARNINGS})
+            target_link_libraries(terminal_link_tests PRIVATE h89host)
+            if(NOT APPLE)
+                target_link_libraries(terminal_link_tests PRIVATE util)
+            endif()
+            add_test(NAME terminal_link_tests COMMAND terminal_link_tests ${CMAKE_SOURCE_DIR}/roms)
+        endif()
         add_executable(state_tests tests/state_tests.cpp)
         target_compile_options(state_tests PRIVATE ${H89_WARNINGS})
         target_link_libraries(state_tests PRIVATE h89core)

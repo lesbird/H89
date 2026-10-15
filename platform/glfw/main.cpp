@@ -37,6 +37,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -78,13 +79,14 @@ void ringBell(App& app) {
 }
 
 void keyClick(App& app) {
-    if (app.keyClick && app.speed == 1) playSound(app.clickSound);
+    if (app.keyClick && (app.speed == 1 || app.terminal)) playSound(app.clickSound);
 }
 
 // True while an ImGui window is taking the keyboard.
 bool overlayHasKeyboard(const App& app) {
 #if H89_DEBUGGER
-    return (app.debuggerVisible || app.settingsVisible) && ImGui::GetIO().WantCaptureKeyboard;
+    bool transfer = app.link && app.link->transfer();
+    return (app.debuggerVisible || app.settingsVisible || transfer) && ImGui::GetIO().WantCaptureKeyboard;
 #else
     (void)app;
     return false;
@@ -111,7 +113,7 @@ void onKey(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) 
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
     const int hostKeys = GLFW_MOD_CONTROL | GLFW_MOD_ALT;
     if (overlayHasKeyboard(*app) && (mods & hostKeys) != hostKeys) return;
-    h89::H19& term = *app->machine->terminal();
+    h89::H19& term = h19(*app);
 
     if (key == GLFW_KEY_F10) { // BREAK is held, not typed
         if (action != GLFW_REPEAT) term.setBreak(action == GLFW_PRESS);
@@ -126,20 +128,31 @@ void onKey(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) 
             app->settings.save();
             applySettings(*app);
         };
+        // A terminal on its own has no computer to speed up, debug or save.
+        bool computer = !terminalOnly(*app);
         switch (key) {
-        case GLFW_KEY_R: app->machine->reset(); break;
+        case GLFW_KEY_R:
+            if (computer) app->machine->reset();
+            else term.reset();
+            break;
         case GLFW_KEY_C:
             app->settings.setBool("crt", !app->renderer.effects());
             app->settings.save();
             applySettings(*app);
             break;
 #if H89_DEBUGGER
-        case GLFW_KEY_D: app->debuggerVisible = !app->debuggerVisible; break;
+        case GLFW_KEY_D: app->debuggerVisible = computer && !app->debuggerVisible; break;
         case GLFW_KEY_P: app->settingsVisible = !app->settingsVisible; break;
 #endif
-        case GLFW_KEY_T: setSpeed(*app, app->speed == 0 ? app->lastSpeed : 0); break;
-        case GLFW_KEY_S: saveState(*app, defaultStatePath()); break;
-        case GLFW_KEY_L: loadState(*app, defaultStatePath()); break;
+        case GLFW_KEY_T:
+            if (computer) setSpeed(*app, app->speed == 0 ? app->lastSpeed : 0);
+            break;
+        case GLFW_KEY_S:
+            if (computer) saveState(*app, defaultStatePath());
+            break;
+        case GLFW_KEY_L:
+            if (computer) loadState(*app, defaultStatePath());
+            break;
         case GLFW_KEY_1: setPhosphor(0); break;
         case GLFW_KEY_2: setPhosphor(1); break;
         case GLFW_KEY_3: setPhosphor(2); break;
@@ -210,6 +223,7 @@ void insertDisks(App& app, const std::vector<std::string>& paths) {
 
 void onDrop(GLFWwindow* window, int count, const char** paths) {
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
+    if (terminalOnly(*app)) return;
     insertDisks(*app, std::vector<std::string>(paths, paths + count));
 }
 
@@ -220,7 +234,7 @@ void onChar(GLFWwindow* window, unsigned int codepoint) {
         app->suppressNextChar = false;
         return;
     }
-    if (codepoint >= 0x20 && codepoint < 0x7F) app->machine->terminal()->typeChar(static_cast<uint8_t>(codepoint));
+    if (codepoint >= 0x20 && codepoint < 0x7F) h19(*app).typeChar(static_cast<uint8_t>(codepoint));
 }
 
 // The first time the emulator runs, copies the disks that come with it to
@@ -257,7 +271,46 @@ std::string driveName(int drive) {
                                        : "DK" + std::to_string(drive - App::kFirstH37Drive) + ":";
 }
 
+const TerminalSwitch kTerminalSwitches[] = {
+    {"h19FullDuplex", "Full duplex (off: keys also show on the screen)", 401, h89::sw401::kFullDuplex, true},
+    {"h19BlockCursor", "Block cursor", 402, h89::sw402::kBlockCursor, false},
+    {"h19WrapAtEnd", "Wrap at the end of a line", 402, h89::sw402::kWrapAtEol, false},
+    {"h19AutoLF", "Line feed after each received carriage return", 402, h89::sw402::kAutoLf, false},
+    {"h19AutoCR", "Carriage return after each received line feed", 402, h89::sw402::kAutoCr, false},
+    {"h19ANSI", "ANSI escape sequences (off: Heath)", 402, h89::sw402::kAnsiMode, false},
+    {"h19KeypadShifted", "Keypad shifted", 402, h89::sw402::kKeypadShifted, false},
+};
+const int kTerminalSwitchCount = sizeof kTerminalSwitches / sizeof kTerminalSwitches[0];
+
+h89::H19& h19(App& app) {
+    return app.terminal ? *app.terminal : *app.machine->terminal();
+}
+
+bool terminalOnly(const App& app) {
+    return app.terminal != nullptr;
+}
+
+std::string terminalSpec(const App& app) {
+    if (!app.terminalOverride.empty()) return app.terminalOverride;
+    const h89::Settings& s = app.settings;
+    std::string port = s.get("terminalPort");
+    if (port.empty()) return {};
+    return port + ":" + std::to_string(s.getInt("terminalBaud", 9600)) + ":" + s.get("terminalFormat", "8N1") +
+           (s.getBool("terminalRtsCts", false) ? ":rtscts" : "");
+}
+
+void connectTerminal(App& app) {
+    if (!app.link) return;
+    std::string spec = terminalSpec(app), error;
+    h89::SerialSettings settings;
+    if (spec.empty()) app.link->close();
+    else if (!h89::SerialSettings::parse(spec, settings, &error)) showError(error);
+    else app.link->open(settings); // the title shows any failure; it retries
+    updateTitle(app);
+}
+
 bool driveAvailable(const App& app, int drive) {
+    if (!app.machine) return false;
     return drive < App::kFirstH37Drive ? app.machine->h17() != nullptr : app.machine->h37() != nullptr;
 }
 
@@ -337,6 +390,7 @@ void restoreOriginalDisks(App& app) {
 }
 
 bool connectSerial(App& app, int port, const std::string& spec) {
+    if (!app.machine) return false;
     std::string error;
     if (spec.empty()) {
         app.serial[port].close();
@@ -357,6 +411,7 @@ std::string defaultStatePath() {
 }
 
 void saveState(App& app, const std::string& path) {
+    if (!app.machine) return;
     std::vector<uint8_t> state = app.machine->saveState();
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
@@ -366,6 +421,7 @@ void saveState(App& app, const std::string& path) {
 }
 
 void loadState(App& app, const std::string& path) {
+    if (!app.machine) return;
     std::string err;
     std::vector<std::string> warnings;
     std::vector<uint8_t> state = h89::loadFile(path, &err);
@@ -394,8 +450,11 @@ bool buildMachine(App& app, std::string* error) {
     if (dir.empty()) dir = app.settings.get("roms");
     if (dir.empty()) dir = app.builtInRoms;
     bool mtr89 = app.settings.getInt("monitor", 90) == 89;
+    bool terminal = !app.terminalOverride.empty() || app.settings.getBool("terminalOnly", false);
     h89::RomScan scan = h89::scanRomDirectory(dir, mtr89);
-    if (!scan.ok() && !app.builtInRoms.empty() && dir != app.builtInRoms) {
+    // A terminal on its own needs only the H19's ROMs.
+    auto usable = [&] { return terminal ? scan.config.hasTerminal() : scan.ok(); };
+    if (!usable() && !app.builtInRoms.empty() && dir != app.builtInRoms) {
         showError(scan.error + "\n\nUsing the ROMs that came with H89 instead.");
         app.romOverride.clear();
         app.settings.remove("roms");
@@ -403,15 +462,31 @@ bool buildMachine(App& app, std::string* error) {
         dir = app.builtInRoms;
         scan = h89::scanRomDirectory(dir, mtr89);
     }
-    if (!scan.ok()) {
+    if (!usable()) {
         *error = scan.error;
         return false;
     }
-    scan.config.ramKB = app.settings.getInt("memory", 64);
     app.romDir = dir;
     app.romSummary = scan.summary;
-    app.machine = std::make_unique<h89::Machine>(std::move(scan.config));
     app.debug = h89::DebugControl();
+    if (terminal) {
+        app.link.reset(); // before the H19 it points at
+        app.machine.reset();
+#if H89_DEBUGGER
+        app.debuggerVisible = false;
+#endif
+        app.terminal = std::make_unique<h89::H19>(scan.config.terminal);
+        app.link = std::make_unique<h89::TerminalLink>(*app.terminal);
+        app.terminal->onBell = [&app] { ringBell(app); };
+        app.terminal->onKeyClick = [&app] { keyClick(app); };
+        applySettings(app);
+        connectTerminal(app);
+        return true;
+    }
+    app.link.reset();
+    app.terminal.reset();
+    scan.config.ramKB = app.settings.getInt("memory", 64);
+    app.machine = std::make_unique<h89::Machine>(std::move(scan.config));
     app.machine->terminal()->onBell = [&app] { ringBell(app); };
     app.machine->terminal()->onKeyClick = [&app] { keyClick(app); };
     app.machine->serialOutput = [&app](int port, uint8_t b) { app.serial[port].output(b); };
@@ -439,6 +514,20 @@ void applySettings(App& app) {
     app.renderer.setEffects(s.getBool("crt", true));
     app.bell = s.getInt("bell", 0);
     app.keyClick = s.getBool("keyClick", true);
+    if (app.machine || app.terminal) {
+        // The baud rate bits matter only inside an H89, whose console runs
+        // at 9600; on a host serial port the port's rate is used.
+        uint8_t sw401 = h89::sw401::kBaud9600, sw402 = 0;
+        for (int i = 0; i < kTerminalSwitchCount; ++i) {
+            const TerminalSwitch& t = kTerminalSwitches[i];
+            if (s.getBool(t.key, t.fallback)) (t.sw == 401 ? sw401 : sw402) |= t.bit;
+        }
+        h89::H19& term = h19(app);
+        if (term.config().sw401 != sw401 || term.config().sw402 != sw402) {
+            term.setSwitches(sw401, sw402);
+            term.reset();
+        }
+    }
     if (app.machine) {
         uint8_t sw = app.machine->config().sw501 & ~(h89::sw501::kBootFrom170 | h89::sw501::kAutoBoot);
         if (s.getBool("bootH37", false)) sw |= h89::sw501::kBootFrom170;
@@ -449,8 +538,17 @@ void applySettings(App& app) {
 }
 
 void updateTitle(App& app) {
-    if (!app.window || !app.machine) return;
+    if (!app.window || (!app.machine && !app.terminal)) return;
     std::string title = "Heathkit H89";
+    if (app.terminal) {
+        std::string spec = terminalSpec(app);
+        title = "H19 Terminal - " + (spec.empty() ? std::string("choose a serial port") : app.link->description());
+#if H89_DEBUGGER
+        title += "    [Ctrl+Alt+P: settings]";
+#endif
+        glfwSetWindowTitle(app.window, title.c_str());
+        return;
+    }
     int boot = app.settings.getBool("bootH37", false) ? App::kFirstH37Drive : 0;
     std::string path = diskPath(app, boot);
     if (!path.empty()) title += " - " + driveName(boot) + " " + fs::path(path).filename().string();
@@ -477,6 +575,26 @@ std::string chooseOpenFile(const char* title, const char* filter) {
     ofn.lpstrTitle = title;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     return GetOpenFileNameA(&ofn) ? buf : "";
+}
+
+std::vector<std::string> chooseOpenFiles(const char* title, const char* filter) {
+    // Several files come back as "folder\0name\0name\0\0", one as its path.
+    std::vector<char> buf(32768, 0);
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof ofn;
+    ofn.hwndOwner = ownerWindow();
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = static_cast<DWORD>(buf.size());
+    ofn.lpstrTitle = title;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+    if (!GetOpenFileNameA(&ofn)) return {};
+    std::vector<std::string> parts;
+    for (const char* p = buf.data(); *p; p += std::strlen(p) + 1) parts.emplace_back(p);
+    if (parts.size() == 1) return parts;
+    std::vector<std::string> paths;
+    for (size_t i = 1; i < parts.size(); ++i) paths.push_back((fs::path(parts[0]) / parts[i]).string());
+    return paths;
 }
 
 std::string chooseSaveFile(const char* title, const char* filter, const char* defaultName) {
@@ -513,6 +631,7 @@ void openFolder(const std::string& path) {
 }
 #else
 std::string chooseOpenFile(const char*, const char*) { return ""; }
+std::vector<std::string> chooseOpenFiles(const char*, const char*) { return {}; }
 std::string chooseSaveFile(const char*, const char*, const char*) { return ""; }
 std::string chooseFolder(const char*) { return ""; }
 void openFolder(const std::string& path) {
@@ -528,7 +647,8 @@ void openFolder(const std::string& path) {
 #endif
 
 int main(int argc, char** argv) {
-    const char* usage = "Usage: H89 [--printer file] [--modem spec] [--aux spec] [rom-folder] [disk-image...]";
+    const char* usage = "Usage: H89 [--printer file] [--modem spec] [--aux spec] [rom-folder] [disk-image...]\n"
+                        "       H89 --terminal PORT[:BAUD[:FORMAT[:rtscts]]] [rom-folder]   (H19 terminal only)";
 #if defined(_WIN32)
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); // for the folder picker
 #endif
@@ -552,6 +672,7 @@ int main(int argc, char** argv) {
                                     : -1;
         std::error_code ec;
         if (port >= 0 && i + 1 < argc) serialSpecs[port] = argv[++i];
+        else if (a == "--terminal" && i + 1 < argc) app.terminalOverride = argv[++i];
         else if (a == "--help" || a == "-h") {
             showError(usage);
             return 0;
@@ -595,8 +716,8 @@ int main(int argc, char** argv) {
         glfwTerminate();
         return 1;
     }
-    if (!disks.empty()) insertDisks(app, disks);
-    for (int p = 0; p < h89::Machine::kSerialPorts; ++p) {
+    if (!disks.empty() && app.machine) insertDisks(app, disks);
+    for (int p = 0; p < h89::Machine::kSerialPorts && app.machine; ++p) {
         std::string spec = serialSpecs[p].empty() ? app.settings.get(serialKey(p)) : serialSpecs[p];
         if (!spec.empty()) connectSerial(app, p, spec);
     }
@@ -625,39 +746,52 @@ int main(int argc, char** argv) {
     constexpr double kFrameTime = 1.0 / h89::Machine::kFrameHz;
     double last = glfwGetTime();
     double pending = 0.0;
+    double lastTitle = last;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        for (int p = 0; p < h89::Machine::kSerialPorts; ++p) app.serial[p].pump(*app.machine, p);
         double now = glfwGetTime();
         pending += now - last;
         last = now;
-        if (app.speed == 0) {
-            // As many frames as fit in most of a display refresh.
-            do app.debug.runFrame(*app.machine);
-            while (glfwGetTime() - now < 0.012);
-            pending = 0;
-        }
-        if (pending > 0.25) pending = 0.25; // don't spiral after a stall
-        while (pending >= kFrameTime) {
-            for (int i = 0; i < app.speed; ++i) app.debug.runFrame(*app.machine);
-            pending -= kFrameTime;
+        if (app.terminal) {
+            // Real time; the link catches up on its own when data is waiting.
+            if (pending > 0.25) pending = 0.25;
+            for (; pending >= kFrameTime; pending -= kFrameTime) app.link->runFrame();
+            if (now - lastTitle >= 1.0) { // the connection can come and go
+                lastTitle = now;
+                updateTitle(app);
+            }
+        } else {
+            for (int p = 0; p < h89::Machine::kSerialPorts; ++p) app.serial[p].pump(*app.machine, p);
+            if (app.speed == 0) {
+                // As many frames as fit in most of a display refresh.
+                do app.debug.runFrame(*app.machine);
+                while (glfwGetTime() - now < 0.012);
+                pending = 0;
+            }
+            if (pending > 0.25) pending = 0.25; // don't spiral after a stall
+            while (pending >= kFrameTime) {
+                for (int i = 0; i < app.speed; ++i) app.debug.runFrame(*app.machine);
+                pending -= kFrameTime;
+            }
         }
 
-        const auto& fb = app.machine->framebuffer();
+        const auto& fb = h19(app).framebuffer();
         app.renderer.uploadFrame(fb.pixels.data(), h89::kScreenWidth, h89::kScreenHeight);
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
         app.renderer.draw(w, h);
 #if H89_DEBUGGER
-        if (app.debug.paused()) app.debuggerVisible = true; // e.g. a breakpoint was hit
-        if (app.debuggerVisible || app.settingsVisible) {
+        if (app.machine && app.debug.paused()) app.debuggerVisible = true; // e.g. a breakpoint was hit
+        bool transfer = app.link && app.link->transfer();
+        if (app.debuggerVisible || app.settingsVisible || transfer) {
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
-            if (app.debuggerVisible) app.debuggerUI.draw(*app.machine, app.debug);
+            if (app.debuggerVisible && app.machine) app.debuggerUI.draw(*app.machine, app.debug);
             if (app.settingsVisible) drawSettings(app); // may rebuild the machine
+            if (app.link && app.link->transfer()) drawTransfer(app);
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         }
@@ -670,6 +804,8 @@ int main(int argc, char** argv) {
     ImGui::DestroyContext();
 #endif
     app.renderer.shutdown();
+    app.link.reset();
+    app.terminal.reset();
     app.machine.reset();
     gApp = nullptr;
 

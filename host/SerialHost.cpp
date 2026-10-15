@@ -92,6 +92,17 @@ bool SerialHost::open(const std::string& spec, std::string* error) {
         if (ok) spec_ = spec;
         return ok;
     }
+    if (spec.rfind("serial:", 0) == 0) {
+        close();
+        SerialSettings settings;
+        auto port = std::make_unique<SerialPort>();
+        if (!SerialSettings::parse(rest(7), settings, error) || !port->open(settings, error)) return false;
+        serialPort_ = std::move(port);
+        serialSettings_ = settings;
+        mode_ = Mode::Serial;
+        spec_ = spec;
+        return true;
+    }
     if (spec.rfind("connect:", 0) == 0) {
         std::string target = rest(8);
         size_t colon = target.rfind(':');
@@ -195,6 +206,7 @@ void SerialHost::close() {
     dropClient();
     closeSocket(listener_);
     listener_ = kNoSocket;
+    serialPort_.reset();
     mode_ = Mode::None;
     spec_.clear();
 }
@@ -209,7 +221,7 @@ void SerialHost::dropClient() {
 }
 
 bool SerialHost::connected() const {
-    return mode_ == Mode::File || client_ != kNoSocket;
+    return mode_ == Mode::File || mode_ == Mode::Serial || client_ != kNoSocket;
 }
 
 std::string SerialHost::description() const {
@@ -220,6 +232,9 @@ std::string SerialHost::description() const {
         return client_ != kNoSocket ? "client connected on port " + std::to_string(port_)
                                     : "listening on port " + std::to_string(port_);
     case Mode::Connect: return "connected to " + host_ + ":" + std::to_string(port_);
+    case Mode::Serial:
+        return serialSettings_.device + " at " + std::to_string(serialSettings_.baud) + " " +
+               serialSettings_.format() + (serialPort_->isOpen() ? "" : " (gone)");
     }
     return "";
 }
@@ -228,13 +243,19 @@ void SerialHost::output(uint8_t byte) {
     if (mode_ == Mode::File) {
         std::fputc(byte, file_);
         std::fflush(file_);
-    } else if (client_ != kNoSocket) {
+    } else if (client_ != kNoSocket || (mode_ == Mode::Serial && serialPort_->isOpen())) {
         outbound_.push_back(byte);
         flushPending();
     }
 }
 
 void SerialHost::flushPending() {
+    if (mode_ == Mode::Serial) {
+        int n = outbound_.empty() ? 0 : serialPort_->write(outbound_.data(), outbound_.size());
+        if (n > 0) outbound_.erase(outbound_.begin(), outbound_.begin() + n);
+        else if (n < 0) outbound_.clear(); // the port went away
+        return;
+    }
     while (!outbound_.empty() && client_ != kNoSocket) {
         auto n = ::send(native(client_), reinterpret_cast<const char*>(outbound_.data()),
                         static_cast<int>(outbound_.size()), 0);
@@ -277,9 +298,21 @@ void SerialHost::pump(Machine& machine, int port) {
             }
         }
     }
-    // A TCP peer raises CTS, DSR and DCD like a modem. A file leaves them
-    // low, which Heath's printer handshake reads as "not busy".
-    bool now = client_ != kNoSocket;
+    if (mode_ == Mode::Serial && serialPort_->isOpen()) {
+        flushPending();
+        uint8_t buf[512];
+        if (inboundPos_ == inbound_.size()) inbound_.clear(), inboundPos_ = 0;
+        while (inbound_.size() - inboundPos_ < 4096) {
+            int n = serialPort_->read(buf, sizeof buf);
+            if (n <= 0) break;
+            inbound_.insert(inbound_.end(), buf, buf + n);
+        }
+    }
+    // A TCP peer or a host serial port raises CTS, DSR and DCD like a modem.
+    // A file leaves them low, which Heath's printer handshake reads as "not
+    // busy"; so does a serial port on the printer port, for the same reason.
+    bool now = client_ != kNoSocket ||
+               (mode_ == Mode::Serial && serialPort_->isOpen() && port != Machine::kPrinter);
     if (now != lastConnected_) {
         machine.setSerialConnected(port, now);
         lastConnected_ = now;

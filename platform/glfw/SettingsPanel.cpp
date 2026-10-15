@@ -6,6 +6,7 @@
 
 #include "imgui.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -64,6 +65,10 @@ void note(const char* text) {
 }
 
 void machineSection(App& app) {
+    if (terminalOnly(app)) {
+        note("Running as an H19 terminal on its own: see the Terminal tab. The ROMs below still supply "
+             "its firmware and font.");
+    }
     std::string roms = app.settings.get("roms");
     ImGui::Text("ROMs:");
     ImGui::SameLine();
@@ -100,7 +105,191 @@ void machineSection(App& app) {
     settingCheckbox(app, "Boot from the disk at power-on and reset", "autoBoot", false);
     ImGui::SetNextItemWidth(220);
     settingCombo(app, "Speed", "speed", 1, {{"Normal (2 MHz)", 1}, {"2x", 2}, {"4x", 4}, {"Maximum", 0}});
-    if (ImGui::Button("Reset")) app.machine->reset();
+    if (ImGui::Button("Reset")) {
+        if (terminalOnly(app)) h19(app).reset();
+        else app.machine->reset();
+    }
+}
+
+h89::TextSendOptions textOptions(const App& app) {
+    using LE = h89::TextSendOptions::LineEnding;
+    h89::TextSendOptions o;
+    int ending = app.settings.getInt("textLineEnding", 0);
+    o.lineEnding = ending == 1 ? LE::CRLF : ending == 2 ? LE::LF : ending == 3 ? LE::AsIs : LE::CR;
+    o.charDelayMs = std::clamp(app.settings.getInt("textCharDelay", 0), 0, 5000);
+    o.lineDelayMs = std::clamp(app.settings.getInt("textLineDelay", 0), 0, 10000);
+    return o;
+}
+
+void startTransfer(App& app, std::unique_ptr<h89::FileTransfer> transfer, const std::string& error) {
+    if (!transfer) showError(error);
+    else if (!app.link->startTransfer(std::move(transfer))) showError("A transfer is already running.");
+}
+
+void transferSection(App& app) {
+    ImGui::SeparatorText("File transfer");
+    if (!terminalOnly(app)) {
+        ImGui::TextDisabled("For the terminal on a serial port.");
+        return;
+    }
+    // Windows has file pickers; elsewhere the path is typed in.
+    static char typed[512] = "";
+#if defined(_WIN32)
+    const bool pickers = true;
+#else
+    const bool pickers = false;
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##xferpath", "File (or folder, for ZMODEM downloads) path", typed, sizeof typed);
+#endif
+    const char* any = "All files\0*.*\0";
+    const bool busy = app.link->transferRunning();
+    ImGui::BeginDisabled(busy);
+    std::string error;
+    if (ImGui::Button("Send Text File...")) {
+        std::string path = pickers ? chooseOpenFile("Choose a text file to type to the computer", any) : typed;
+        if (!path.empty()) startTransfer(app, h89::sendTextFile(path, textOptions(app), &error), error);
+    }
+    ImGui::Text("Upload:");
+    for (int k = 0; k < 3; ++k) {
+        static const char* const names[] = {"XMODEM...", "XMODEM-1K...", "ZMODEM..."};
+        ImGui::SameLine();
+        if (!ImGui::Button(names[k])) continue;
+        std::vector<std::string> paths;
+        if (!pickers) paths = {typed};
+        else if (k == 2) paths = chooseOpenFiles("Choose files to send with ZMODEM", any);
+        else paths = {chooseOpenFile("Choose a file to send with XMODEM", any)};
+        if (paths.empty() || paths[0].empty()) continue;
+        startTransfer(app, k == 2 ? h89::zmodemSend(paths, &error) : h89::xmodemSend(paths[0], k == 1, &error), error);
+    }
+    ImGui::Text("Download:");
+    ImGui::SameLine();
+    if (ImGui::Button("XMODEM... ")) {
+        std::string path = pickers ? chooseSaveFile("Save the file from the computer (XMODEM doesn't send its name)",
+                                                    any, "DOWNLOAD.BIN")
+                                   : typed;
+        if (!path.empty()) startTransfer(app, h89::xmodemReceive(path, &error), error);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("ZMODEM")) startTransfer(app, h89::zmodemReceive(), "");
+    ImGui::EndDisabled();
+    note("Start the computer's receive or send program before or after these. ZMODEM downloads ask where to "
+         "save each file the computer sends.");
+
+    ImGui::Text("Text files:");
+    ImGui::SetNextItemWidth(160);
+    settingCombo(app, "Line endings", "textLineEnding", 0,
+                 {{"CR (Return)", 0}, {"CR LF", 1}, {"LF", 2}, {"Unchanged", 3}});
+    for (const auto& [label, key] : {std::pair{"ms after each character", "textCharDelay"},
+                                     std::pair{"ms after each line", "textLineDelay"}}) {
+        int ms = app.settings.getInt(key, 0);
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt(label, &ms, 1, 10)) {
+            app.settings.setInt(key, std::clamp(ms, 0, 10000));
+            app.settings.save();
+        }
+    }
+}
+
+void terminalSection(App& app) {
+    h89::Settings& s = app.settings;
+    int mode = terminalOnly(app) ? 1 : 0;
+    ImGui::SetNextItemWidth(260);
+    if (choice("Run as", mode, {{"H89 computer", 0}, {"H19 terminal on a serial port", 1}})) {
+        app.terminalOverride.clear();
+        s.setBool("terminalOnly", mode == 1);
+        s.save();
+        std::string error;
+        if (!buildMachine(app, &error)) showError(error);
+    }
+    note("As a terminal, H89 is just the H19, talking to a real computer (an H8, say) through a serial "
+         "port such as a USB serial adapter.");
+    if (!app.terminalOverride.empty()) {
+        ImGui::Text("Using %s from the command line.", app.terminalOverride.c_str());
+        if (terminalOnly(app)) ImGui::TextWrapped("Status: %s", app.link->description().c_str());
+        transferSection(app);
+        return;
+    }
+    ImGui::SeparatorText("Serial port");
+
+    bool changed = false;
+    static char port[256];
+    static bool loaded = false;
+    if (!loaded) {
+        std::snprintf(port, sizeof port, "%s", s.get("terminalPort").c_str());
+        loaded = true;
+    }
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::BeginCombo("Port", port[0] ? port : "choose...")) {
+        for (const auto& p : h89::SerialPort::list()) {
+            if (ImGui::Selectable(p.c_str(), p == port)) {
+                std::snprintf(port, sizeof port, "%s", p.c_str());
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::InputTextWithHint("##portname", "or type its name", port, sizeof port,
+                                 ImGuiInputTextFlags_EnterReturnsTrue))
+        changed = true;
+
+    int baud = s.getInt("terminalBaud", 9600);
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::BeginCombo("Speed", std::to_string(baud).c_str())) {
+        for (size_t i = 0; i < h89::kCommonBaudRateCount; ++i) {
+            int b = h89::kCommonBaudRates[i];
+            if (ImGui::Selectable(std::to_string(b).c_str(), b == baud)) {
+                baud = b;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    static int typedBaud = 0;
+    if (!typedBaud) typedBaud = baud;
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::InputInt("##baud", &typedBaud, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue) && typedBaud >= 50) {
+        baud = typedBaud;
+        changed = true;
+    }
+    note("Any rate the adapter supports: pick one or type it and press Enter. The H19's own baud rate "
+         "switches don't apply.");
+
+    static const char* const formats[] = {"8N1", "8N2", "8E1", "8O1", "7E1", "7O1", "7N2"};
+    std::string format = s.get("terminalFormat", "8N1");
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::BeginCombo("Format", format.c_str())) {
+        for (const char* f : formats) {
+            if (ImGui::Selectable(f, format == f)) {
+                format = f;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    bool rtsCts = s.getBool("terminalRtsCts", false);
+    if (ImGui::Checkbox("RTS/CTS hardware flow control", &rtsCts)) changed = true;
+
+    if (changed) {
+        typedBaud = baud;
+        s.set("terminalPort", port);
+        s.setInt("terminalBaud", baud);
+        s.set("terminalFormat", format);
+        s.setBool("terminalRtsCts", rtsCts);
+        s.save();
+        connectTerminal(app);
+    }
+    if (terminalOnly(app)) ImGui::TextWrapped("Status: %s", app.link->description().c_str());
+    else ImGui::TextDisabled("Status: not in use (running as an H89)");
+
+    transferSection(app);
+
+    ImGui::SeparatorText("H19 switches");
+    for (int i = 0; i < kTerminalSwitchCount; ++i)
+        settingCheckbox(app, kTerminalSwitches[i].title, kTerminalSwitches[i].key, kTerminalSwitches[i].fallback);
+    note("Switch changes reset the terminal.");
 }
 
 void displaySection(App& app) {
@@ -265,6 +454,34 @@ void keysSection() {
 
 } // namespace
 
+void drawTransfer(App& app) {
+    h89::FileTransfer* t = app.link->transfer();
+    if (t->state() == h89::FileTransfer::State::NeedsSavePath) {
+        // A ZMODEM download named a file: ask where it goes ("" skips it).
+#if defined(_WIN32)
+        std::string where = chooseSaveFile(("Save " + t->offeredName() + " from the computer").c_str(),
+                                           "All files\0*.*\0", t->offeredName().c_str());
+#else
+        std::string where = t->offeredName(); // the working folder
+#endif
+        t->setSavePath(where);
+    }
+    ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x / 2, 60), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0));
+    ImGui::Begin("File Transfer", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::TextUnformatted(t->title().c_str());
+    float fraction = t->bytesTotal() ? static_cast<float>(t->bytesDone()) / static_cast<float>(t->bytesTotal()) : 0.f;
+    if (t->state() == h89::FileTransfer::State::Done) fraction = 1.f;
+    ImGui::ProgressBar(fraction, ImVec2(-1, 0), "");
+    ImGui::TextWrapped("%s", t->status().c_str());
+    if (app.link->transferRunning()) {
+        if (ImGui::Button("Cancel")) app.link->cancelTransfer();
+    } else if (ImGui::Button("Close")) {
+        app.link->clearTransfer();
+    }
+    ImGui::End();
+}
+
 void drawSettings(App& app) {
     ImGui::SetNextWindowSize(ImVec2(620, 560), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver);
@@ -277,7 +494,13 @@ void drawSettings(App& app) {
             machineSection(app);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Disks")) {
+        if (ImGui::BeginTabItem("Terminal")) {
+            terminalSection(app);
+            ImGui::EndTabItem();
+        }
+        // The rest belong to the computer, not a terminal on its own.
+        const bool computer = !terminalOnly(app);
+        if (computer && ImGui::BeginTabItem("Disks")) {
             disksSection(app);
             ImGui::EndTabItem();
         }
@@ -285,11 +508,11 @@ void drawSettings(App& app) {
             displaySection(app);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Serial Ports")) {
+        if (computer && ImGui::BeginTabItem("Serial Ports")) {
             serialSection(app);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("States")) {
+        if (computer && ImGui::BeginTabItem("States")) {
             stateSection(app);
             ImGui::EndTabItem();
         }

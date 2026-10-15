@@ -15,6 +15,7 @@ void Ins8250::reset() {
 }
 
 int Ins8250::charCycles() const {
+    if (fixedCharCycles_ > 0) return fixedCharCycles_;
     int dataBits = 5 + (lcr_ & 0x03);
     int stopBits = (lcr_ & 0x04) ? 2 : 1;
     int parity = (lcr_ & 0x08) ? 1 : 0;

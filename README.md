@@ -18,6 +18,10 @@ build is built and packaged by CI but has had little hands-on testing.
   formatting (CP/M FORMAT) work.
 - The Mac app and the Windows program come with the ROMs and with HDOS 2.0
   and CP/M 2.2.03 boot disks for both controllers.
+- H89 can also be just the H19 terminal for a real computer, such as an H8, on
+  a USB serial adapter at any speed the adapter supports. It can type text
+  files to the computer, and send and receive files with XMODEM and ZMODEM
+  (see [H19 terminal for a real computer](#h19-terminal-for-a-real-computer)).
 
 ## Installing
 
@@ -127,7 +131,8 @@ build/h8dtool rm   mydisk.h8d HELLO.ASM
 | Keypad 0–9 . ENTER | Numeric keypad |
 | BACK SPACE / DELETE | Backspace (Mac: delete) / Delete (Mac: fn-delete) |
 
-Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour, ⌘T turbo, ⌘, settings;
+Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour, ⌘T turbo, ⌘, settings,
+⌘. cancel a file transfer;
 Windows Ctrl+Alt+R, Ctrl+Alt+1/2/3, Ctrl+Alt+T and Ctrl+Alt+P.
 
 The H19's speaker is reproduced: a 2 kHz bell (its 2.048 MHz clock divided
@@ -157,9 +162,12 @@ fetching Dear ImGui).
 ### Printer and serial ports
 
 The serial card's three ports can be connected to the host: LP: (the
-printer, at E0h), MODEM (D8h) and AUX (D0h). Each goes to a file (output is
-appended), listens on a local TCP port for one client (`telnet localhost
-8089` or `nc localhost 8089`), or connects out to a TCP host. Input is
+printer, at E0h), MODEM (D8h) and AUX (D0h). Each can go to:
+- a file (output is appended)
+- a local TCP port that one client connects to (`telnet localhost 8089` or
+  `nc localhost 8089`)
+- an outgoing TCP connection to another host
+- a host serial port (`serial:COM3:9600`) Input is
 delivered as fast as the H89 reads it, so nothing overruns even at 300 baud.
 - **Mac:** Machine › Serial Ports.
 - **Windows:** the Serial Ports tab in Settings, or
@@ -172,6 +180,96 @@ A TCP connection raises CTS, DSR and DCD, as a modem would. A printer file
 leaves them low, which Heath CP/M's printer driver reads as "not busy". In
 Heath CP/M 2.2.03, `PIP LST:=FILE` prints and `PUN:`/`RDR:` use the MODEM
 port, at 300 baud unless CONFIGUR changes it.
+
+### H19 terminal for a real computer
+
+H89 can also be just the H19 terminal, talking to a real computer (an H8,
+say) through a serial port on this computer, such as a USB serial adapter.
+- **Mac:** Machine › H19 Terminal Only (Serial Port), then pick the port,
+  speed, format and flow control under Settings › Terminal.
+- **Windows:** Settings (Ctrl+Alt+P) › Terminal › Run as, or
+  `H89.exe --terminal COM3:115200:8N1`.
+- **h89run:** `--terminal /dev/cu.usbserial-1410:115200` shows the terminal
+  in your text terminal.
+
+A port is written `DEVICE[:BAUD[:FORMAT[:rtscts]]]`. FORMAT is 8N1 (the
+default), 8N2, 8E1, 8O1, 7E1, 7O1 or 7N2, and `rtscts` turns on hardware flow
+control.
+
+The line runs at the speed you choose, at any rate the adapter supports,
+including ones far above the real H19's 19,200 baud; the H19's baud rate
+switches don't apply. Its other switches (duplex, block cursor, wrap, auto
+line feed and carriage return, ANSI mode, keypad shifted) are in the same
+settings.
+
+Nothing is lost at any speed. Received data waits until the H19's firmware
+can take it, and the emulated H19 runs faster than real time while data is
+waiting; it gets through about 57,000 characters a second. Its own XON/XOFF
+flow control is handled inside the emulator, so it never reaches the
+computer. Ctrl-S and Ctrl-Q typed on the keyboard do go out. BREAK (F10)
+sends a real break. If the adapter is unplugged the terminal keeps running
+and reconnects when it's plugged back in.
+
+Hardware notes:
+- **Adapters:** ones with an FTDI chip need no driver on macOS or Windows;
+  Prolific (PL2303) and CH340 ones may need the maker's driver.
+- **Port names:** Mac ports are `/dev/cu.*`, Windows ports are `COM` numbers
+  (Device Manager lists them), and Linux ports are `/dev/ttyUSB*`.
+- **Cabling:** the H19 is a DB-25 terminal and the H8's serial board (H8-4
+  or H8-5) needs RS-232, not 20 mA current loop. Start with transmit,
+  receive and ground; if nothing appears, swap transmit and receive (a
+  null-modem adapter does this).
+- **Speed:** match the speed to the H8's console port.
+
+The H89's own serial card ports can use a host serial port too: give
+`serial:DEVICE[:BAUD...]` as the printer, modem or AUX connection.
+
+#### Sending and receiving files
+
+With the terminal on a serial port, files can go to and from the computer:
+- **Mac:** the Transfer menu.
+- **Windows:** Settings › Terminal › File transfer.
+- **h89run:** the options below.
+
+The choices are:
+- **Send Text File** types a text file to the computer a character at a
+  time, as if you were typing it: into an editor, BASIC, or `PIP
+  FILE.TXT=CON:` on CP/M.
+  - Line endings become CR by default (CR LF, LF or unchanged under Settings
+    › Terminal), and the text stops at a CP/M end of file (^Z).
+  - XOFF from the computer pauses it.
+  - A pause after each character or line helps a program that can't keep
+    up.
+  - You see the text as the computer echoes it.
+- **Upload with XMODEM, XMODEM-1K or ZMODEM** sends files to the computer's
+  receive program.
+  - XMODEM uses CRCs when the receiver asks for them, otherwise checksums.
+  - ZMODEM can send several files at once, under CP/M-style 8.3 upper-case
+    names.
+- **Download with XMODEM** asks where to save the file first, because
+  XMODEM doesn't send names. The file arrives padded to a whole 128-byte
+  CP/M record with ^Z, exactly as sent.
+- **Download with ZMODEM** asks where to save each file as the computer
+  offers it, starting with the name it sends; cancel the dialog to skip
+  that file.
+
+A window shows progress, with Cancel. The protocols recover from line noise
+by resending, and cancelling stops the other end too. A failed or cancelled
+download leaves no partial file. While a protocol transfer runs, the
+keyboard is ignored and its bytes don't reach the screen. Start the
+computer's program (XMODEM, ZMODEM or a terminal program on the H8) before
+or after choosing the transfer: each end waits for the other for about a
+minute.
+
+```sh
+build/h89run --terminal /dev/cu.usbserial-1410:38400 --seconds 120 \
+    --step 'A>|XMODEM R GAME.COM\r' --xmodem-send game.com
+```
+
+`--send-text f`, `--xmodem-send f`, `--xmodem1k-send f`, `--zmodem-send f`
+(repeat for more files), `--xmodem-receive f` and `--zmodem-receive folder`
+start a transfer once the `--step`s are done; the exit status says whether
+it worked.
 
 ### Speed and saved states
 
@@ -214,7 +312,11 @@ Options:
   Without `--h19rom`/`--font`, the console serial port connects straight to
   your terminal.
 - `--save-state f`, `--load-state f`
-- `--printer file`, `--modem spec`, `--aux spec` (serial ports, see above)
+- `--printer file`, `--modem spec`, `--aux spec` (serial ports, see above;
+  a spec can also be `serial:DEVICE[:BAUD[:FORMAT[:rtscts]]]`)
+- `--terminal DEVICE[:BAUD[:FORMAT[:rtscts]]]` runs just the H19 as a
+  terminal on a host serial port (see above). With `--seconds`, it runs
+  that much real time and `--step` / `--expect` watch what arrives.
 - For scripts: `--seconds n` runs that much emulated time as fast as possible
   and prints the final screen. `--step "text|keys"` waits for `text` in the
   output, then types `keys`. `--expect text` sets the exit status.

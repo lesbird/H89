@@ -43,6 +43,13 @@ public:
     void setModemInputs(uint8_t msrHighNibble);
 
     uint16_t divisor() const { return dll_ | (dlm_ << 8); }
+    uint8_t lineControl() const { return lcr_; }  // bit 6: sending a break
+    uint8_t modemControl() const { return mcr_; } // bit 0 DTR, bit 1 RTS
+
+    // Characters take this many CPU cycles whatever the divisor says (0 =
+    // follow the divisor). For a UART whose line is really a host serial port
+    // running at its own rate.
+    void setFixedCharCycles(int cycles) { fixedCharCycles_ = cycles; }
 
     void saveState(StateWriter& w) const;
     void loadState(StateReader& r);
@@ -68,6 +75,7 @@ private:
     bool threIntPending_ = false; // cleared by reading IIR or writing THR
     int txCountdown_ = 0;
     int rxCountdown_ = 0;
+    int fixedCharCycles_ = 0; // host configuration, not machine state
     std::deque<uint8_t> rxQueue_;
 };
 

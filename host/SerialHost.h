@@ -1,7 +1,10 @@
 #pragma once
 
+#include "SerialPort.h"
+
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,8 +23,10 @@ public:
     SerialHost(const SerialHost&) = delete;
     SerialHost& operator=(const SerialHost&) = delete;
 
-    // Parses "file:PATH", "listen:PORT" or "connect:HOST:PORT" (a bare path
-    // means file:). Returns false and sets `error` if it can't be opened.
+    // Parses "file:PATH", "listen:PORT", "connect:HOST:PORT" or
+    // "serial:DEVICE[:BAUD[:FORMAT[:rtscts]]]" (a host serial port such as a
+    // USB adapter); a bare path means file:. Returns false and sets `error`
+    // if it can't be opened.
     bool open(const std::string& spec, std::string* error = nullptr);
     bool openFile(const std::string& path, std::string* error = nullptr);
     bool listen(int port, std::string* error = nullptr);
@@ -45,7 +50,7 @@ public:
     void pump(Machine& machine, int port);
 
 private:
-    enum class Mode { None, File, Listen, Connect };
+    enum class Mode { None, File, Listen, Connect, Serial };
     void dropClient();
     void flushPending();
 
@@ -57,6 +62,8 @@ private:
     int port_ = 0;
     intptr_t listener_ = -1; // sockets (SOCKET on Windows)
     intptr_t client_ = -1;
+    std::unique_ptr<SerialPort> serialPort_;
+    SerialSettings serialSettings_;
     std::vector<uint8_t> inbound_;  // received, not yet given to the port
     size_t inboundPos_ = 0;
     std::vector<uint8_t> outbound_; // sent by the H89, not yet written

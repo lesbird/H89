@@ -7,6 +7,10 @@
 //          [--seconds n] [--type text] [--step "wait|keys"]... [--expect text]
 //          [--screenshot f.pgm] [--trace-io] [--load-state f] [--save-state f]
 //          [--printer file] [--modem spec] [--aux spec]
+//   h89run --terminal PORT[:BAUD[:FORMAT[:rtscts]]] [--roms dir] [--seconds n] [--type text]
+//          [--step "wait|keys"]... [--expect text] [transfer]
+//   transfer: --send-text f | --xmodem-send f | --xmodem1k-send f | --zmodem-send f...
+//             | --xmodem-receive f | --zmodem-receive dir
 //
 // With no ROM options, the ROMs are found by part number in the first folder
 // of: --roms, $H89_ROMS, ./roms, and roms/ next to (or one level above) the
@@ -30,10 +34,18 @@
 //
 // The serial card's ports (LP at E0h, MODEM at D8h, AUX at D0h) connect to a
 // file, "listen:PORT" (a TCP client such as telnet) or "connect:HOST:PORT".
+//
+// --terminal runs just the H19, as a terminal for a real computer on a host
+// serial port (/dev/cu.usbserial-1410:115200:8N1, say), at that port's rate.
+// --seconds then runs for that much real time; --step and --expect watch
+// what the computer sends. A file transfer starts once the steps are done
+// (so they can start the computer's end), and the run waits for it; the exit
+// status says whether it worked.
 
 #include "Machine.h"
 #include "RomSet.h"
 #include "SerialHost.h"
+#include "TerminalLink.h"
 
 #include <chrono>
 #include <cstdio>
@@ -41,6 +53,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -62,8 +75,12 @@ namespace {
                  "          [--rom <monitor.rom>] [--h17rom <rom>] [--h19rom <rom> --font <rom>]\n"
                  "          [--sw501 hex] [--ram kb]\n"
                  "          [--seconds n] [--type text] [--step \"wait|keys\"]... [--expect text]\n"
-                 "          [--screenshot f.pgm] [--trace-io]\n",
-                 argv0);
+                 "          [--screenshot f.pgm] [--trace-io]\n"
+                 "       %s --terminal PORT[:BAUD[:FORMAT[:rtscts]]] [--roms dir]\n"
+                 "          [--seconds n] [--type text] [--step \"wait|keys\"]... [--expect text]\n"
+                 "          [--send-text f | --xmodem-send f | --xmodem1k-send f | --zmodem-send f...\n"
+                 "           | --xmodem-receive f | --zmodem-receive dir]\n",
+                 argv0, argv0);
     std::exit(2);
 }
 
@@ -160,6 +177,151 @@ struct RawTerminal {
 };
 #endif
 
+void printScreen(const h89::H19& term) {
+    std::string screen = term.screenText();
+    std::printf("+%s+\n", std::string(80, '-').c_str());
+    size_t pos = 0, nl;
+    while ((nl = screen.find('\n', pos)) != std::string::npos) {
+        std::printf("|%-80s|\n", screen.substr(pos, nl - pos).c_str());
+        pos = nl + 1;
+    }
+    std::printf("+%s+\n", std::string(80, '-').c_str());
+}
+
+// A file transfer for --terminal: kind ("send-text", "xmodem-send", ...) and
+// its files.
+struct TransferRequest {
+    std::string kind;
+    std::vector<std::string> paths;
+};
+
+std::unique_ptr<h89::FileTransfer> makeTransfer(const TransferRequest& r, std::string* error) {
+    if (r.kind == "send-text") return h89::sendTextFile(r.paths[0], {}, error);
+    if (r.kind == "xmodem-send") return h89::xmodemSend(r.paths[0], false, error);
+    if (r.kind == "xmodem1k-send") return h89::xmodemSend(r.paths[0], true, error);
+    if (r.kind == "zmodem-send") return h89::zmodemSend(r.paths, error);
+    if (r.kind == "xmodem-receive") return h89::xmodemReceive(r.paths[0], error);
+    return h89::zmodemReceive();
+}
+
+// --terminal: the H19 on its own, on a host serial port, in real time.
+int runTerminal(const h89::H19Config& config, const std::string& spec, double seconds, const std::string& typeText,
+                const std::vector<std::pair<std::string, std::string>>& steps, const std::string& expect,
+                const TransferRequest& transferRequest) {
+    h89::SerialSettings settings;
+    std::string err;
+    if (!h89::SerialSettings::parse(spec, settings, &err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 2;
+    }
+    h89::H19 term(config);
+    h89::TerminalLink link(term);
+    if (!link.open(settings, &err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        if (seconds > 0) return 2;
+        std::fprintf(stderr, "(running offline; retrying the port every second)\n");
+    }
+    using clock = std::chrono::steady_clock;
+    const auto frame = std::chrono::microseconds(1'000'000 / 60);
+    auto next = clock::now();
+    bool transferStarted = false;
+    auto startTransfer = [&]() -> bool {
+        transferStarted = true;
+        auto t = makeTransfer(transferRequest, &err);
+        if (!t) {
+            std::fprintf(stderr, "%s\n", err.c_str());
+            return false;
+        }
+        link.startTransfer(std::move(t));
+        return true;
+    };
+    // ZMODEM downloads go in the folder given.
+    auto answerTransfer = [&] {
+        h89::FileTransfer* t = link.transfer();
+        if (t && t->state() == h89::FileTransfer::State::NeedsSavePath)
+            t->setSavePath((std::filesystem::path(transferRequest.paths[0]) / t->offeredName()).string());
+    };
+    auto transferReport = [&]() -> int {
+        h89::FileTransfer* t = link.transfer();
+        if (!t) return 0;
+        std::fprintf(stderr, "%s: %s\n", t->title().c_str(), t->status().c_str());
+        for (const auto& f : t->savedFiles()) std::fprintf(stderr, "saved %s\n", f.c_str());
+        return t->state() == h89::FileTransfer::State::Done ? 0 : 1;
+    };
+
+    if (seconds > 0) {
+        std::string pending = typeText;
+        size_t step = 0, searchFrom = 0;
+        auto end = clock::now() + std::chrono::milliseconds(static_cast<int64_t>(seconds * 1000));
+        while (clock::now() < end) {
+            link.runFrame();
+            const std::string& got = link.received();
+            if (pending.empty() && step < steps.size()) {
+                size_t at = got.find(steps[step].first, searchFrom);
+                if (at != std::string::npos) {
+                    searchFrom = at + steps[step].first.size();
+                    pending = steps[step++].second;
+                }
+            }
+            if (!pending.empty() && term.keyboardIdle()) {
+                term.typeChar(static_cast<uint8_t>(pending.front()));
+                pending.erase(0, 1);
+            }
+            bool done = pending.empty() && step == steps.size();
+            if (done && !transferRequest.kind.empty() && !transferStarted && !startTransfer()) return 2;
+            answerTransfer();
+            if (link.transferRunning()) done = false;
+            if (done && !transferRequest.kind.empty()) {
+                // Let the last reply go, then stop unless there's text to wait for.
+                for (int i = 0; i < 30; ++i) link.runFrame();
+                if (expect.empty()) break;
+            }
+            if (done && !expect.empty() && term.screenText().find(expect) != std::string::npos) break;
+            next += frame;
+            std::this_thread::sleep_until(next);
+        }
+        printScreen(term);
+        std::fprintf(stderr, "%s\n", link.description().c_str());
+        int transferResult = transferReport();
+        if (!transferRequest.kind.empty() && !transferStarted) {
+            std::fprintf(stderr, "the transfer never started (its steps didn't finish)\n");
+            transferResult = 1;
+        }
+        if (expect.empty()) return transferResult;
+        bool found = term.screenText().find(expect) != std::string::npos ||
+                     link.received().find(expect) != std::string::npos;
+        std::fprintf(stderr, "%s: expected \"%s\"\n", found ? "PASS" : "FAIL", expect.c_str());
+        return found ? transferResult : 1;
+    }
+
+#if defined(_WIN32)
+    std::fprintf(stderr, "interactive mode is not supported on Windows; use --seconds\n");
+    return 2;
+#else
+    if (!transferRequest.kind.empty() && !startTransfer()) return 2;
+    struct Report {
+        std::function<int()> f;
+        ~Report() { f(); }
+    } report{transferReport}; // after the screen is restored
+    RawTerminal raw;
+    ScreenMirror mirror;
+    for (;;) {
+        pollfd pfd{STDIN_FILENO, POLLIN, 0};
+        while (term.keyboardIdle() && poll(&pfd, 1, 0) > 0) {
+            char c;
+            if (read(STDIN_FILENO, &c, 1) != 1) break;
+            if (c == 0x1D) return 0; // Ctrl-]
+            term.typeChar(static_cast<uint8_t>(c == '\n' ? '\r' : c));
+        }
+        link.runFrame();
+        answerTransfer();
+        mirror.update(term);
+        next += frame;
+        std::this_thread::sleep_until(next);
+    }
+#endif
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -174,6 +336,8 @@ int main(int argc, char** argv) {
     std::string romDir;
     std::string loadStatePath, saveStatePath;
     std::string serialSpecs[h89::Machine::kSerialPorts];
+    std::string terminalSpec;
+    TransferRequest transfer;
 
     for (int i = 1; i < argc; ++i) {
         auto arg = [&](const char* name) { return std::strcmp(argv[i], name) == 0 && i + 1 < argc; };
@@ -227,6 +391,14 @@ int main(int argc, char** argv) {
             loadStatePath = argv[++i];
         } else if (arg("--save-state")) {
             saveStatePath = argv[++i];
+        } else if (arg("--terminal")) {
+            terminalSpec = argv[++i];
+        } else if (arg("--send-text") || arg("--xmodem-send") || arg("--xmodem1k-send") || arg("--zmodem-send") ||
+                   arg("--xmodem-receive") || arg("--zmodem-receive")) {
+            std::string kind = argv[i] + 2;
+            if (!transfer.kind.empty() && !(kind == "zmodem-send" && transfer.kind == kind)) usage(argv[0]);
+            transfer.kind = kind;
+            transfer.paths.push_back(argv[++i]);
         } else if (std::strcmp(argv[i], "--trace-io") == 0) {
             traceIo = true;
         } else {
@@ -236,6 +408,27 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s\n", err.c_str());
             return 2;
         }
+    }
+    if (!transfer.kind.empty() && terminalSpec.empty()) {
+        std::fprintf(stderr, "file transfers need --terminal\n");
+        return 2;
+    }
+    if (!terminalSpec.empty()) {
+        // Only the H19's ROMs are needed.
+        if (!config.hasTerminal()) {
+            for (const auto& dir : romSearchPath(argv[0], romDir)) {
+                h89::RomScan scan = h89::scanRomDirectory(dir.string());
+                if (!scan.config.hasTerminal()) continue;
+                if (config.terminal.rom.empty()) config.terminal.rom = std::move(scan.config.terminal.rom);
+                if (config.terminal.font.empty()) config.terminal.font = std::move(scan.config.terminal.font);
+                break;
+            }
+        }
+        if (!config.hasTerminal()) {
+            std::fprintf(stderr, "The H19 ROMs (444-46 and 444-29) weren't found; use --roms <dir>.\n");
+            return 2;
+        }
+        return runTerminal(config.terminal, terminalSpec, seconds, typeText, steps, expect, transfer);
     }
     if (config.monitorRom.empty()) {
         // No ROMs named: load the whole set from the first ROM folder found,

@@ -5,6 +5,7 @@
 #include "GLRenderer.h"
 #include "Machine.h"
 #include "SerialHost.h"
+#include "TerminalLink.h"
 
 #if H89_DEBUGGER
 #include "DebuggerUI.h"
@@ -31,6 +32,11 @@ struct App {
     std::string romSummary;
 
     std::unique_ptr<h89::Machine> machine;
+    // Terminal-only mode: an H19 on its own on a host serial port (then
+    // `machine` is null).
+    std::unique_ptr<h89::H19> terminal;
+    std::unique_ptr<h89::TerminalLink> link;
+    std::string terminalOverride; // --terminal SPEC: this run only
     h89::GLRenderer renderer;
     GLFWwindow* window = nullptr;
     bool suppressNextChar = false; // keypad keys also generate a char event
@@ -48,6 +54,26 @@ struct App {
     bool settingsVisible = false;
 #endif
 };
+
+// The H19 settings offered for both modes (SW401 apart from its baud rate,
+// and SW402).
+struct TerminalSwitch {
+    const char* key;
+    const char* title;
+    int sw; // 401 or 402
+    uint8_t bit;
+    bool fallback;
+};
+extern const TerminalSwitch kTerminalSwitches[];
+extern const int kTerminalSwitchCount;
+
+// The H19 in use: the H89's own, or the one on its own.
+h89::H19& h19(App& app);
+bool terminalOnly(const App& app);
+// The terminal's port spec from the command line or the settings ("" if no
+// port is chosen); connectTerminal() (re)opens it.
+std::string terminalSpec(const App& app);
+void connectTerminal(App& app);
 
 // Builds (or rebuilds) the machine from the settings and puts the saved
 // disks back in the drives. Returns false, with `error`, if the ROMs fail.
@@ -73,6 +99,7 @@ std::string defaultStatePath();
 void showError(const std::string& message);
 // Native pickers (Windows); "" if cancelled or unavailable.
 std::string chooseOpenFile(const char* title, const char* filter);
+std::vector<std::string> chooseOpenFiles(const char* title, const char* filter);
 std::string chooseSaveFile(const char* title, const char* filter, const char* defaultName);
 std::string chooseFolder(const char* title);
 void openFolder(const std::string& path);
@@ -80,4 +107,6 @@ void openFolder(const std::string& path);
 #if H89_DEBUGGER
 // The settings panel (Ctrl+Alt+P).
 void drawSettings(App& app);
+// The file transfer window, while there is a transfer.
+void drawTransfer(App& app);
 #endif

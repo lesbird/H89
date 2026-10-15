@@ -5,6 +5,7 @@
 #endif
 #import "H89DiskBrowser.h"
 #import "H89Emulator.h"
+#import "H89TransferPanel.h"
 #import "H89View.h"
 
 #include "AppFiles.h"
@@ -44,6 +45,8 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSInteger _speed;      // frames per tick; 0 = maximum
     NSInteger _lastSpeed;  // to return to from turbo
     H89Preferences* _preferences;
+    H89TransferPanel* _transferPanel;
+    BOOL _askingWhereToSave; // a ZMODEM save sheet is up
     H89Bell _bell;
     BOOL _keyClick;
     NSSound* _bellSound;
@@ -107,6 +110,7 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
 
 - (H89Emulator*)emulatorWithRoms:(NSString*)dir error:(NSError**)error {
     NSUserDefaults* d = Defaults();
+    if ([d boolForKey:H89TerminalOnlyKey]) return [[H89Emulator alloc] initTerminalWithRomDirectory:dir error:error];
     return [[H89Emulator alloc] initWithRomDirectory:dir
                                          preferMTR89:[d integerForKey:H89MonitorKey] == 89
                                             memoryKB:[d objectForKey:H89MemoryKey] ? [d integerForKey:H89MemoryKey] : 64
@@ -152,7 +156,13 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
     _debuggerView.emulator = emulator;
 #endif
     for (H89DiskBrowser* browser in _browsers) browser.emulator = emulator;
+    [_transferPanel.window orderOut:nil]; // any transfer went with the old one
+    _transferPanel.emulator = emulator;
     [self preferencesChanged];
+    if (emulator.terminalOnly) {
+        [self preferencesChangedTerminalPort];
+        return YES;
+    }
     [self restoreDisks];
     for (H89DiskBrowser* browser in _browsers) [browser refresh];
     // Last, once the old machine is gone, so a listening port is free again.
@@ -171,7 +181,133 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
 }
 
 - (void)preferencesChangedMachine {
+#if H89_DEBUGGER
+    if ([Defaults() boolForKey:H89TerminalOnlyKey]) [_debuggerWindow orderOut:nil];
+#endif
     [self startEmulator];
+}
+
+- (void)preferencesChangedTerminalPort {
+    if (!_emulator.terminalOnly) return;
+    NSString* spec = H89TerminalSpec();
+    if (spec) [_emulator connectTerminal:spec error:nil]; // the status shows any failure
+    else [_emulator disconnectTerminal];
+    [self updateTitle];
+}
+
+- (NSString*)terminalStatus {
+    if (!_emulator.terminalOnly) return @"";
+    return H89TerminalSpec() ? _emulator.terminalStatus : @"Choose a serial port";
+}
+
+#pragma mark - File transfers
+
+- (void)startedTransfer:(BOOL)ok error:(NSError*)error {
+    if (!ok) {
+        [[NSAlert alertWithError:error] runModal];
+        return;
+    }
+    if (!_transferPanel) _transferPanel = [[H89TransferPanel alloc] initWithParent:_window];
+    _transferPanel.emulator = _emulator;
+    [_transferPanel show];
+}
+
+// Open panels run as sheets so the terminal (and its line) keeps going.
+- (void)chooseFiles:(NSString*)message multiple:(BOOL)multiple then:(void (^)(NSArray<NSString*>*))then {
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = multiple;
+    panel.prompt = @"Send";
+    panel.message = message;
+    [panel beginSheetModalForWindow:_window
+                  completionHandler:^(NSModalResponse r) {
+                      if (r != NSModalResponseOK) return;
+                      NSMutableArray<NSString*>* paths = [NSMutableArray array];
+                      for (NSURL* url in panel.URLs) [paths addObject:url.path];
+                      then(paths);
+                  }];
+}
+
+- (void)sendTextFile:(id)sender {
+    [self chooseFiles:@"Choose a text file to type to the computer"
+             multiple:NO
+                 then:^(NSArray<NSString*>* paths) {
+                     NSError* error = nil;
+                     BOOL ok = [self->_emulator startUpload:H89UploadText paths:paths error:&error];
+                     [self startedTransfer:ok error:error];
+                 }];
+}
+
+- (void)upload:(NSMenuItem*)sender {
+    H89Upload kind = (H89Upload)sender.tag;
+    BOOL zmodem = kind == H89UploadZmodem;
+    NSString* message = zmodem ? @"Choose files to send with ZMODEM (start the computer's receiver first, or after)"
+                               : @"Choose a file to send with XMODEM (start the computer's receiver first, or after)";
+    [self chooseFiles:message
+             multiple:zmodem
+                 then:^(NSArray<NSString*>* paths) {
+                     NSError* error = nil;
+                     BOOL ok = [self->_emulator startUpload:kind paths:paths error:&error];
+                     [self startedTransfer:ok error:error];
+                 }];
+}
+
+- (void)downloadXmodem:(id)sender {
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.message = @"Where should the file from the computer be saved? (XMODEM doesn't send its name)";
+    panel.nameFieldStringValue = @"DOWNLOAD.BIN";
+    panel.extensionHidden = NO; // CP/M names: show and keep exactly what's typed
+    panel.canSelectHiddenExtension = NO;
+    panel.prompt = @"Receive";
+    [panel beginSheetModalForWindow:_window
+                  completionHandler:^(NSModalResponse r) {
+                      if (r != NSModalResponseOK) return;
+                      NSError* error = nil;
+                      BOOL ok = [self->_emulator startXmodemDownloadTo:panel.URL.path error:&error];
+                      [self startedTransfer:ok error:error];
+                  }];
+}
+
+- (void)downloadZmodem:(id)sender {
+    NSError* error = nil;
+    BOOL ok = [_emulator startZmodemDownload:&error];
+    [self startedTransfer:ok error:error];
+}
+
+- (void)cancelTransfer:(id)sender {
+    [_emulator cancelTransfer];
+    [_transferPanel update];
+}
+
+// Each tick while a transfer exists: progress, and ZMODEM's save questions.
+- (void)followTransfer {
+    [_transferPanel update];
+    NSString* offered = _emulator.transferOfferedName;
+    if (!offered || _askingWhereToSave) return;
+    _askingWhereToSave = YES;
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.message = [NSString stringWithFormat:@"The computer is sending %@. Where should it be saved?", offered];
+    panel.nameFieldStringValue = offered;
+    panel.extensionHidden = NO; // CP/M names: show and keep exactly what's typed
+    panel.canSelectHiddenExtension = NO;
+    panel.prompt = @"Save";
+    [panel beginSheetModalForWindow:_window
+                  completionHandler:^(NSModalResponse r) {
+                      self->_askingWhereToSave = NO;
+                      [self->_emulator setTransferSavePath:r == NSModalResponseOK ? panel.URL.path : nil];
+                  }];
+}
+
+- (void)toggleTerminalMode:(id)sender {
+    BOOL terminal = !_emulator.terminalOnly;
+    [Defaults() setBool:terminal forKey:H89TerminalOnlyKey];
+    [self preferencesChangedMachine];
+    if (terminal && !H89TerminalSpec()) {
+        if (!_preferences) _preferences = [[H89Preferences alloc] initWithDelegate:self];
+        [_preferences showTerminal];
+    }
+    [_preferences reload];
 }
 
 // Applies every setting except the machine's make-up.
@@ -188,6 +324,12 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
     _keyClick = ![d objectForKey:H89KeyClickKey] || [d boolForKey:H89KeyClickKey];
     _emulator.bootFromH37 = [d boolForKey:H89BootFromH37Key];
     _emulator.autoBoot = [d boolForKey:H89AutoBootKey];
+    NSInteger sw401, sw402;
+    H89TerminalSwitches(&sw401, &sw402);
+    [_emulator setTerminalSW401:sw401 SW402:sw402];
+    [_emulator setTextLineEnding:[d integerForKey:H89TextLineEndingKey]
+                       charDelay:[d integerForKey:H89TextCharDelayKey]
+                       lineDelay:[d integerForKey:H89TextLineDelayKey]];
     [self updateTitle];
     [_preferences reload];
 }
@@ -386,6 +528,10 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
 
 // Shows the boot drive's disk in the title.
 - (void)updateTitle {
+    if (_emulator.terminalOnly) {
+        _window.title = [NSString stringWithFormat:@"H19 Terminal — %@", [self terminalStatus]];
+        return;
+    }
     NSInteger boot = _emulator.bootFromH37 ? H89FirstH37Drive : 0;
     NSString* path = [_emulator diskPathForDrive:boot];
     _window.title = path ? [NSString stringWithFormat:@"Heathkit H89 — %@ %@", [_emulator driveName:boot],
@@ -476,7 +622,7 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
 }
 
 - (void)keyClick {
-    if (!_keyClick || _speed != 1) return; // clicks would pile up when running fast
+    if (!_keyClick || (_speed != 1 && !_emulator.terminalOnly)) return; // clicks would pile up when running fast
     [_clickSound stop];
     [_clickSound play];
 }
@@ -486,6 +632,14 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
 }
 
 - (void)tick:(NSTimer*)timer {
+    if (_emulator.terminalOnly) {
+        // Real time; the link catches up on its own when data is waiting.
+        [_emulator runFrame];
+        _view.needsDisplay = YES;
+        if (_emulator.transferExists) [self followTransfer];
+        if (_emulator.frameCount % 60 == 0) [self updateTitle]; // the connection can come and go
+        return;
+    }
     if (_speed == 0) {
         // Maximum: as many frames as fit in most of a 60 Hz tick.
         CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
@@ -589,6 +743,10 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
 // Rebuilt when opened, to show each port's connection.
 - (void)rebuildSerialMenu:(NSMenu*)menu {
     [menu removeAllItems];
+    if (_emulator.terminalOnly) {
+        [menu addItemWithTitle:@"Not used by the terminal on its own" action:nil keyEquivalent:@""].enabled = NO;
+        return;
+    }
     for (NSInteger p = 0; p < 3; ++p) {
         if (p) [menu addItem:[NSMenuItem separatorItem]];
         NSString* title = [NSString stringWithFormat:@"%@ — %@", kSerialNames[p],
@@ -694,6 +852,25 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
+    SEL a = item.action;
+    if (a == @selector(sendTextFile:) || a == @selector(upload:) || a == @selector(downloadXmodem:) ||
+        a == @selector(downloadZmodem:))
+        return _emulator.terminalOnly && !_emulator.transferRunning;
+    if (a == @selector(cancelTransfer:)) return _emulator.transferRunning;
+    if (item.action == @selector(toggleTerminalMode:)) {
+        item.state = _emulator.terminalOnly ? NSControlStateValueOn : NSControlStateValueOff;
+        return YES;
+    }
+    // A terminal on its own has no computer to speed up, debug or save.
+    if (_emulator.terminalOnly &&
+        (item.action == @selector(chooseSpeed:) || item.action == @selector(toggleTurbo:) ||
+         item.action == @selector(saveState:) || item.action == @selector(loadState:) ||
+         item.action == @selector(toggleBootDevice:)
+#if H89_DEBUGGER
+         || item.action == @selector(showDebugger:)
+#endif
+             ))
+        return NO;
     if (item.action == @selector(chooseSpeed:)) {
         item.state = item.tag == _speed ? NSControlStateValueOn : NSControlStateValueOff;
     }
@@ -754,6 +931,10 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
     [machineMenu addItemWithTitle:@"Save State…" action:@selector(saveState:) keyEquivalent:@"s"].target = self;
     [machineMenu addItemWithTitle:@"Load State…" action:@selector(loadState:) keyEquivalent:@"l"].target = self;
     [machineMenu addItem:[NSMenuItem separatorItem]];
+    [machineMenu addItemWithTitle:@"H19 Terminal Only (Serial Port)"
+                           action:@selector(toggleTerminalMode:)
+                    keyEquivalent:@""].target = self;
+    [machineMenu addItem:[NSMenuItem separatorItem]];
     // SW501 section 4: which controller the monitor's B command boots.
     [machineMenu addItemWithTitle:@"Boot from H37 (DK0:)"
                            action:@selector(toggleBootDevice:)
@@ -765,6 +946,34 @@ static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
     _disksMenu.delegate = self;
     _disksMenu.autoenablesItems = NO;
     disksItem.submenu = _disksMenu;
+
+    // File transfers over the terminal's serial line (terminal mode).
+    NSMenuItem* transferItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
+    NSMenu* transferMenu = [[NSMenu alloc] initWithTitle:@"Transfer"];
+    [transferMenu addItemWithTitle:@"Send Text File…" action:@selector(sendTextFile:) keyEquivalent:@""].target = self;
+    [transferMenu addItem:[NSMenuItem separatorItem]];
+    struct {
+        NSString* title;
+        H89Upload kind;
+    } uploads[] = {
+        {@"Upload with XMODEM…", H89UploadXmodem},
+        {@"Upload with XMODEM-1K…", H89UploadXmodem1K},
+        {@"Upload with ZMODEM…", H89UploadZmodem},
+    };
+    for (const auto& u : uploads) {
+        NSMenuItem* item = [transferMenu addItemWithTitle:u.title action:@selector(upload:) keyEquivalent:@""];
+        item.tag = u.kind;
+        item.target = self;
+    }
+    [transferMenu addItem:[NSMenuItem separatorItem]];
+    [transferMenu addItemWithTitle:@"Download with XMODEM…" action:@selector(downloadXmodem:) keyEquivalent:@""].target = self;
+    [transferMenu addItemWithTitle:@"Download with ZMODEM" action:@selector(downloadZmodem:) keyEquivalent:@""].target = self;
+    [transferMenu addItem:[NSMenuItem separatorItem]];
+    [transferMenu addItemWithTitle:@"Cancel Transfer" action:@selector(cancelTransfer:) keyEquivalent:@"."].target = self;
+    [transferMenu addItem:[NSMenuItem separatorItem]];
+    [transferMenu addItemWithTitle:@"Transfers work when H89 is the H19 terminal on a serial port." action:nil
+                     keyEquivalent:@""].enabled = NO;
+    transferItem.submenu = transferMenu;
 
     NSMenuItem* viewItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
     NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
