@@ -814,4 +814,27 @@ int Z80::execED() {
     return 8; // undefined ED opcodes act as 2-byte NOPs
 }
 
+void Z80::saveState(StateWriter& w) const {
+    w.begin("Z80 ");
+    for (const RegPair* p : {&r_.af, &r_.bc, &r_.de, &r_.hl, &r_.af2, &r_.bc2, &r_.de2, &r_.hl2, &r_.ix, &r_.iy})
+        w.u16(p->w);
+    w.u16(r_.sp), w.u16(r_.pc), w.u16(r_.wz);
+    w.u8(r_.i), w.u8(r_.r), w.boolean(r_.iff1), w.boolean(r_.iff2), w.u8(r_.im);
+    w.boolean(halted_), w.boolean(eiDelay_), w.boolean(irqLine_), w.boolean(nmiPending_);
+    w.u64(cycles_);
+    w.end();
+}
+
+void Z80::loadState(StateReader& r) {
+    if (!r.begin("Z80 ")) return;
+    for (RegPair* p : {&r_.af, &r_.bc, &r_.de, &r_.hl, &r_.af2, &r_.bc2, &r_.de2, &r_.hl2, &r_.ix, &r_.iy})
+        p->w = r.u16();
+    r_.sp = r.u16(), r_.pc = r.u16(), r_.wz = r.u16();
+    r_.i = r.u8(), r_.r = r.u8(), r_.iff1 = r.boolean(), r_.iff2 = r.boolean(), r_.im = r.u8();
+    halted_ = r.boolean(), eiDelay_ = r.boolean(), irqLine_ = r.boolean(), nmiPending_ = r.boolean();
+    cycles_ = r.u64();
+    idx_ = 0;
+    r.end();
+}
+
 } // namespace h89

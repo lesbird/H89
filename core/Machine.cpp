@@ -230,4 +230,145 @@ void Machine::drawTestPattern() {
     }
 }
 
+namespace {
+
+constexpr char kStateMagic[] = "H89STATE";
+constexpr uint32_t kStateVersion = 1;
+
+} // namespace
+
+uint64_t Machine::romHash() const {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (const auto* rom : {&config_.monitorRom, &config_.h17Rom, &config_.terminal.rom, &config_.terminal.font}) {
+        for (uint8_t b : *rom) h = (h ^ b) * 0x100000001b3ull;
+        h = (h ^ 0xFF) * 0x100000001b3ull; // separator
+    }
+    return h;
+}
+
+std::vector<uint8_t> Machine::saveState() {
+    StateWriter w;
+    for (const char* c = kStateMagic; *c; ++c) w.u8(static_cast<uint8_t>(*c));
+    w.u32(kStateVersion);
+    w.begin("CONF");
+    w.u64(romHash());
+    w.u8(config_.sw501);
+    w.i32(config_.ramKB);
+    w.boolean(h17_ != nullptr), w.boolean(h37_ != nullptr), w.boolean(terminal_ != nullptr);
+    w.end();
+    saveDisks(w);
+    w.begin("H89 ");
+    cpu_.saveState(w);
+    console_.saveState(w);
+    w.bytes(ram_);
+    w.bytes(h17Ram_);
+    w.u8(gpp_), w.i32(timerCountdown_), w.boolean(timerPending_), w.i32(terminalLag_), w.u64(frames_);
+    w.end();
+    if (terminal_) terminal_->saveState(w);
+    if (h17_) h17_->saveState(w);
+    if (h37_) h37_->saveState(w);
+    return w.data();
+}
+
+void Machine::saveDisks(StateWriter& w) {
+    w.begin("DSKS");
+    auto disk = [&](bool loaded, const std::string& path, bool readOnly, uint64_t hash) {
+        w.boolean(loaded);
+        if (loaded) w.str(path), w.boolean(readOnly), w.u64(hash);
+    };
+    if (h17_)
+        for (int d = 0; d < H17::kDrives; ++d) {
+            const H17Disk& k = h17_->disk(d);
+            disk(k.loaded(), k.path(), k.readOnly(), k.loaded() ? k.contentHash() : 0);
+        }
+    if (h37_)
+        for (int d = 0; d < H37::kDrives; ++d) {
+            const SoftDisk& k = h37_->disk(d);
+            disk(k.loaded(), k.path(), k.readOnly(), k.loaded() ? k.contentHash() : 0);
+        }
+    w.end();
+}
+
+// Remounts the snapshot's disks, keeping ones already mounted from the same
+// file so the emulated OS sees the same in-memory image.
+void Machine::loadDisks(StateReader& r, std::vector<std::string>* warnings) {
+    if (!r.begin("DSKS")) return;
+    auto warn = [&](const std::string& message) {
+        if (warnings) warnings->push_back(message);
+    };
+    auto restore = [&](auto& controller, int drives, const char* prefix) {
+        for (int d = 0; d < drives && r.ok(); ++d) {
+            std::string name = prefix + std::to_string(d) + ":";
+            if (!r.boolean()) {
+                controller.ejectDisk(d);
+                continue;
+            }
+            std::string path = r.str();
+            bool readOnly = r.boolean();
+            uint64_t hash = r.u64();
+            auto& disk = controller.disk(d);
+            if (!(disk.loaded() && disk.path() == path && disk.readOnly() == readOnly)) {
+                std::string err;
+                if (!controller.insertDisk(d, path, readOnly, &err)) {
+                    controller.ejectDisk(d);
+                    warn(name + " " + path + " couldn't be mounted: " + err);
+                    continue;
+                }
+            }
+            if (disk.contentHash() != hash)
+                warn(name + " " + path + " has changed since this state was saved; the restored system may "
+                            "not match what is on the disk.");
+        }
+    };
+    if (h17_) restore(*h17_, H17::kDrives, "SY");
+    if (h37_) restore(*h37_, H37::kDrives, "DK");
+    r.end();
+}
+
+bool Machine::loadState(const std::vector<uint8_t>& data, std::string* error, std::vector<std::string>* warnings) {
+    std::vector<uint8_t> backup = saveState();
+    if (loadStateUnchecked(data, error, warnings)) return true;
+    loadStateUnchecked(backup, nullptr, nullptr);
+    return false;
+}
+
+bool Machine::loadStateUnchecked(const std::vector<uint8_t>& data, std::string* error,
+                                 std::vector<std::string>* warnings) {
+    auto fail = [&](const std::string& why) {
+        if (error) *error = why;
+        return false;
+    };
+    StateReader r(data);
+    for (const char* c = kStateMagic; *c; ++c)
+        if (r.u8() != static_cast<uint8_t>(*c)) return fail("This isn't an H89 saved state.");
+    if (r.u32() != kStateVersion) return fail("This state was saved by a different version of the emulator.");
+    if (!r.begin("CONF")) return fail(r.error());
+    if (r.u64() != romHash()) return fail("This state was saved with different ROMs.");
+    uint8_t sw501 = r.u8();
+    int ramKB = r.i32();
+    bool hasH17 = r.boolean(), hasH37 = r.boolean(), hasTerminal = r.boolean();
+    r.end();
+    if (ramKB != config_.ramKB || hasH17 != (h17_ != nullptr) || hasH37 != (h37_ != nullptr) ||
+        hasTerminal != (terminal_ != nullptr))
+        return fail("This state was saved from a differently configured machine.");
+    config_.sw501 = sw501;
+
+    loadDisks(r, warnings);
+    if (r.begin("H89 ")) {
+        cpu_.loadState(r);
+        console_.loadState(r);
+        r.bytes(ram_);
+        r.bytes(h17Ram_);
+        gpp_ = r.u8(), timerCountdown_ = r.i32(), timerPending_ = r.boolean(), terminalLag_ = r.i32();
+        frames_ = r.u64();
+        r.end();
+    }
+    if (terminal_) terminal_->loadState(r);
+    if (h17_) h17_->loadState(r);
+    if (h37_) h37_->loadState(r);
+    if (!r.ok()) return fail("The state file is damaged: " + r.error() + ".");
+    updateIrq();
+    return true;
+}
+
 } // namespace h89

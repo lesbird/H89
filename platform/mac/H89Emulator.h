@@ -64,6 +64,14 @@ typedef NS_ENUM(NSInteger, H89Key) {
 - (nullable NSString*)diskPathForDrive:(NSInteger)drive;
 - (BOOL)diskIsReadOnlyInDrive:(NSInteger)drive;
 
+// Snapshot of the whole machine, including which disks are mounted (by
+// path). Loading fails, leaving the machine as it was, if the state came
+// from different ROMs; `warnings` lists disks that are missing or changed.
+- (NSData*)saveState;
+- (BOOL)loadState:(NSData*)data
+         warnings:(NSArray<NSString*>* _Nullable* _Nullable)warnings
+            error:(NSError**)error;
+
 // Keyboard: ASCII characters (including control characters) and special keys.
 - (void)typeCharacter:(unichar)character;
 - (void)pressKey:(H89Key)key shift:(BOOL)shift;

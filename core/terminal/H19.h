@@ -94,6 +94,9 @@ public:
     // The displayed screen as text, one line per row (reverse video and
     // graphics characters are shown as their base codes).
     std::string screenText() const;
+
+    void saveState(StateWriter& w) const;
+    void loadState(StateReader& r);
     // Cursor position on the displayed screen; false if it is off screen.
     bool cursorPosition(int& row, int& col) const;
 

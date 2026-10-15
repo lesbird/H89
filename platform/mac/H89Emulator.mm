@@ -126,6 +126,33 @@ static constexpr NSInteger kH37Drives = h89::H37::kDrives;
     return NO;
 }
 
+- (NSData*)saveState {
+    std::vector<uint8_t> state = _machine->saveState();
+    return [NSData dataWithBytes:state.data() length:state.size()];
+}
+
+- (BOOL)loadState:(NSData*)data
+         warnings:(NSArray<NSString*>* _Nullable* _Nullable)warnings
+            error:(NSError**)error {
+    const uint8_t* p = static_cast<const uint8_t*>(data.bytes);
+    std::string message;
+    std::vector<std::string> notes;
+    if (!_machine->loadState(std::vector<uint8_t>(p, p + data.length), &message, &notes)) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"H89"
+                                         code:3
+                                     userInfo:@{NSLocalizedDescriptionKey : @(message.c_str())}];
+        }
+        return NO;
+    }
+    if (warnings) {
+        NSMutableArray<NSString*>* list = [NSMutableArray array];
+        for (const auto& n : notes) [list addObject:@(n.c_str())];
+        *warnings = list;
+    }
+    return YES;
+}
+
 - (void)typeCharacter:(unichar)character {
     if (character < 0x80) _machine->terminal()->typeChar(static_cast<uint8_t>(character));
 }

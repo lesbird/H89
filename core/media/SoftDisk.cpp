@@ -304,4 +304,17 @@ bool SoftDisk::save() {
     return static_cast<bool>(out);
 }
 
+uint64_t SoftDisk::contentHash() const {
+    uint64_t h = 0xcbf29ce484222325ull;
+    auto mix = [&](uint8_t b) { h = (h ^ b) * 0x100000001b3ull; };
+    for (const Track& t : tracks_) {
+        mix(t.mfm);
+        for (const Sector& s : t.sectors) {
+            for (uint8_t b : {s.cylinder, s.head, s.number, s.sizeCode}) mix(b);
+            for (uint8_t b : s.data) mix(b);
+        }
+    }
+    return h;
+}
+
 } // namespace h89

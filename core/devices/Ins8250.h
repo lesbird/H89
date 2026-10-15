@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StateFile.h"
+
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -39,6 +41,9 @@ public:
     void setModemInputs(uint8_t msrHighNibble);
 
     uint16_t divisor() const { return dll_ | (dlm_ << 8); }
+
+    void saveState(StateWriter& w) const;
+    void loadState(StateReader& r);
 
 private:
     static constexpr uint8_t kIirNone = 0x01;

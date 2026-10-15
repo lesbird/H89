@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StateFile.h"
+
 #include <bit>
 #include <cstdint>
 
@@ -65,6 +67,9 @@ public:
 
     Z80Regs& regs() { return r_; }
     const Z80Regs& regs() const { return r_; }
+
+    void saveState(StateWriter& w) const;
+    void loadState(StateReader& r);
 
 private:
     // Fetch/memory helpers

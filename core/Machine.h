@@ -92,6 +92,16 @@ public:
     uint8_t gpp() const { return gpp_; }
     uint8_t peek(uint16_t addr) { return memRead(addr); }
 
+    // Snapshot of the whole machine: CPU board, terminal, floppy controllers,
+    // and which disk images are mounted (by path; their contents stay in
+    // the image files).
+    std::vector<uint8_t> saveState();
+    // Restores a snapshot taken with the same ROMs, remounting its disks.
+    // On failure the machine is unchanged. `warnings` lists disks that
+    // couldn't be remounted or have changed since the snapshot.
+    bool loadState(const std::vector<uint8_t>& data, std::string* error = nullptr,
+                   std::vector<std::string>* warnings = nullptr);
+
 private:
     uint8_t memRead(uint16_t addr) override;
     void memWrite(uint16_t addr, uint8_t value) override;
@@ -103,6 +113,11 @@ private:
     void writeGpp(uint8_t value);
     void updateIrq();
     void drawTestPattern();
+    uint64_t romHash() const;
+    void saveDisks(StateWriter& w);
+    void loadDisks(StateReader& r, std::vector<std::string>* warnings);
+    bool loadStateUnchecked(const std::vector<uint8_t>& data, std::string* error,
+                            std::vector<std::string>* warnings);
 
     MachineConfig config_;
     uint32_t ramTop_; // one past the last RAM address

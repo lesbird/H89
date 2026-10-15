@@ -14,6 +14,8 @@
 #include "GLRenderer.h"
 
 #include <cctype>
+#include <fstream>
+#include <vector>
 #include "Machine.h"
 #include "RomSet.h"
 
@@ -26,8 +28,17 @@ namespace {
 struct App {
     std::unique_ptr<h89::Machine> machine;
     h89::GLRenderer renderer;
+    GLFWwindow* window = nullptr;
     bool suppressNextChar = false; // keypad keys also generate a char event
+    bool turbo = false;            // run as fast as the host allows
 };
+
+// Quick save/load file, in the working directory.
+constexpr const char* kStateFile = "h89.state";
+
+void updateTitle(App& app) {
+    glfwSetWindowTitle(app.window, app.turbo ? "Heathkit H89 (turbo)" : "Heathkit H89");
+}
 
 void showError(const std::string& message) {
 #if defined(_WIN32)
@@ -70,6 +81,28 @@ void onKey(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) 
     if ((mods & hostMods) == hostMods) {
         switch (key) {
         case GLFW_KEY_R: app->machine->reset(); break;
+        case GLFW_KEY_T:
+            app->turbo = !app->turbo;
+            updateTitle(*app);
+            break;
+        case GLFW_KEY_S: {
+            std::vector<uint8_t> state = app->machine->saveState();
+            std::ofstream out(kStateFile, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(state.data()), static_cast<std::streamsize>(state.size()));
+            if (!out) showError(std::string("Couldn't write ") + kStateFile);
+            break;
+        }
+        case GLFW_KEY_L: {
+            std::string err;
+            std::vector<std::string> warnings;
+            std::vector<uint8_t> state = h89::loadFile(kStateFile, &err);
+            if (state.empty() || !app->machine->loadState(state, &err, &warnings)) {
+                showError(std::string(kStateFile) + ": " + err);
+            } else {
+                for (const auto& w : warnings) showError(w);
+            }
+            break;
+        }
         case GLFW_KEY_1: app->renderer.setPhosphor(h89::GLRenderer::Phosphor::White); break;
         case GLFW_KEY_2: app->renderer.setPhosphor(h89::GLRenderer::Phosphor::Green); break;
         case GLFW_KEY_3: app->renderer.setPhosphor(h89::GLRenderer::Phosphor::Amber); break;
@@ -199,6 +232,7 @@ int main(int argc, char** argv) {
             glfwTerminate();
             return 1;
         }
+        app.window = window;
         glfwSetWindowUserPointer(window, &app);
         glfwSetKeyCallback(window, onKey);
         glfwSetCharCallback(window, onChar);
@@ -215,6 +249,12 @@ int main(int argc, char** argv) {
             double now = glfwGetTime();
             pending += now - last;
             last = now;
+            if (app.turbo) {
+                // As many frames as fit in most of a display refresh.
+                do app.machine->runFrame();
+                while (glfwGetTime() - now < 0.012);
+                pending = 0;
+            }
             if (pending > 0.25) pending = 0.25; // don't spiral after a stall
             while (pending >= kFrameTime) {
                 app.machine->runFrame();

@@ -6,6 +6,10 @@
 
 static NSString* const kRomDirectoryKey = @"RomDirectory";
 static NSString* const kBootFromH37Key = @"BootFromH37";
+static NSString* const kSpeedKey = @"Speed";
+
+// Machine › Speed: emulated frames per host frame, or 0 for as many as fit.
+static const NSInteger kSpeeds[] = {1, 2, 4, 0};
 
 // Saved disk for drive n: "Disk<n>Path" and "Disk<n>ReadOnly".
 static NSString* DiskKey(NSInteger drive, NSString* field) {
@@ -20,6 +24,8 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSTimeInterval _lastBell;
     NSMenu* _disksMenu;
     NSMutableArray<H89DiskBrowser*>* _browsers;
+    NSInteger _speed;      // frames per tick; 0 = maximum
+    NSInteger _lastSpeed;  // to return to from turbo
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
@@ -42,6 +48,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     [_window makeFirstResponder:_view];
     [NSApp activateIgnoringOtherApps:YES];
 
+    _speed = [NSUserDefaults.standardUserDefaults objectForKey:kSpeedKey]
+                 ? [NSUserDefaults.standardUserDefaults integerForKey:kSpeedKey]
+                 : 1;
+    _lastSpeed = _speed ? _speed : 1;
     if (![self startEmulatorPrompting:NO]) {
         [NSApp terminate:nil];
         return;
@@ -257,8 +267,76 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 }
 
 - (void)tick:(NSTimer*)timer {
-    [_emulator runFrame];
+    if (_speed == 0) {
+        // Maximum: as many frames as fit in most of a 60 Hz tick.
+        CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+        do [_emulator runFrame];
+        while (CFAbsoluteTimeGetCurrent() - start < 0.012);
+    } else {
+        for (NSInteger i = 0; i < _speed; ++i) [_emulator runFrame];
+    }
     _view.needsDisplay = YES;
+}
+
+- (void)chooseSpeed:(NSMenuItem*)sender {
+    _speed = sender.tag;
+    if (_speed) _lastSpeed = _speed;
+    [NSUserDefaults.standardUserDefaults setInteger:_speed forKey:kSpeedKey];
+}
+
+- (void)toggleTurbo:(id)sender {
+    _speed = _speed == 0 ? _lastSpeed : 0;
+    [NSUserDefaults.standardUserDefaults setInteger:_speed forKey:kSpeedKey];
+}
+
+#pragma mark - Save states
+
+- (void)saveState:(id)sender {
+    NSData* state = _emulator.saveState; // the moment the command was chosen
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = @"H89.h89state";
+    panel.message = @"Save the machine's state (memory, CPU, terminal and which disks are in the drives)";
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSError* error = nil;
+    if (![state writeToURL:panel.URL options:NSDataWritingAtomic error:&error]) [[NSAlert alertWithError:error] runModal];
+}
+
+- (void)loadState:(id)sender {
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+    panel.message = @"Choose a saved machine state";
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSError* error = nil;
+    NSData* data = [NSData dataWithContentsOfURL:panel.URL options:0 error:&error];
+    NSArray<NSString*>* warnings = nil;
+    if (!data || ![_emulator loadState:data warnings:&warnings error:&error]) {
+        [[NSAlert alertWithError:error] runModal];
+        return;
+    }
+    // The state brings its own disks and boot switch: remember them as if
+    // chosen from the menus.
+    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+    for (NSInteger d = 0; d < _emulator.driveCount; ++d) {
+        NSString* path = [_emulator diskPathForDrive:d];
+        if (path) {
+            [defaults setObject:path forKey:DiskKey(d, @"Path")];
+            [defaults setBool:[_emulator diskIsReadOnlyInDrive:d] forKey:DiskKey(d, @"ReadOnly")];
+        } else {
+            [defaults removeObjectForKey:DiskKey(d, @"Path")];
+        }
+    }
+    [defaults setBool:_emulator.bootFromH37 forKey:kBootFromH37Key];
+    [self updateTitle];
+    for (H89DiskBrowser* browser in _browsers) [browser refresh];
+    _view.needsDisplay = YES;
+    if (warnings.count) {
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = @"The state was loaded, but check its disks.";
+        alert.informativeText = [warnings componentsJoinedByString:@"\n\n"];
+        [alert runModal];
+    }
 }
 
 - (void)reset:(id)sender {
@@ -274,6 +352,12 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
+    if (item.action == @selector(chooseSpeed:)) {
+        item.state = item.tag == _speed ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if (item.action == @selector(toggleTurbo:)) {
+        item.state = _speed == 0 ? NSControlStateValueOn : NSControlStateValueOff;
+    }
     if (item.action == @selector(toggleBootDevice:)) {
         item.state = _emulator.bootFromH37 ? NSControlStateValueOn : NSControlStateValueOff;
     }
@@ -298,6 +382,20 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSMenuItem* machineItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
     NSMenu* machineMenu = [[NSMenu alloc] initWithTitle:@"Machine"];
     [machineMenu addItemWithTitle:@"Reset" action:@selector(reset:) keyEquivalent:@"r"].target = self;
+    [machineMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* speedItem = [machineMenu addItemWithTitle:@"Speed" action:nil keyEquivalent:@""];
+    NSMenu* speedMenu = [[NSMenu alloc] initWithTitle:@"Speed"];
+    NSArray* speedNames = @[ @"Normal (2 MHz)", @"2×", @"4×", @"Maximum" ];
+    for (NSUInteger i = 0; i < speedNames.count; ++i) {
+        NSMenuItem* item = [speedMenu addItemWithTitle:speedNames[i] action:@selector(chooseSpeed:) keyEquivalent:@""];
+        item.tag = kSpeeds[i];
+        item.target = self;
+    }
+    speedItem.submenu = speedMenu;
+    [machineMenu addItemWithTitle:@"Turbo" action:@selector(toggleTurbo:) keyEquivalent:@"t"].target = self;
+    [machineMenu addItem:[NSMenuItem separatorItem]];
+    [machineMenu addItemWithTitle:@"Save State…" action:@selector(saveState:) keyEquivalent:@"s"].target = self;
+    [machineMenu addItemWithTitle:@"Load State…" action:@selector(loadState:) keyEquivalent:@"l"].target = self;
     [machineMenu addItem:[NSMenuItem separatorItem]];
     // SW501 section 4: which controller the monitor's B command boots.
     [machineMenu addItemWithTitle:@"Boot from H37 (DK0:)"

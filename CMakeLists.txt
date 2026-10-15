@@ -177,6 +177,10 @@ if(H89_BUILD_TESTS)
     h89_find_rom(H89_H19_FONT *444-29*)
     if(H89_H19_ROM AND H89_H19_FONT)
         add_test(NAME h19_tests COMMAND h19_tests ${CMAKE_SOURCE_DIR}/roms)
+        add_executable(state_tests tests/state_tests.cpp)
+        target_compile_options(state_tests PRIVATE ${H89_WARNINGS})
+        target_link_libraries(state_tests PRIVATE h89core)
+        add_test(NAME state_tests COMMAND state_tests ${CMAKE_SOURCE_DIR}/roms ${CMAKE_SOURCE_DIR}/disks)
         if(H89_MTR90_ROM)
             add_test(NAME boot_h89_with_h19 COMMAND h89run --rom ${H89_MTR90_ROM} --h17rom ${H89_H17_ROM}
                      --h19rom ${H89_H19_ROM} --font ${H89_H19_FONT}

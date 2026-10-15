@@ -51,6 +51,9 @@ public:
     // Replaces a whole track (Write Track / format) and writes the image back.
     bool formatTrack(int cylinder, int head, Track track);
 
+    // FNV-1a hash of every track's layout and data.
+    uint64_t contentHash() const;
+
     // The image as ImageDisk / raw bytes (raw fails unless the geometry is uniform).
     std::vector<uint8_t> imdBytes() const;
     bool rawBytes(std::vector<uint8_t>* out) const;

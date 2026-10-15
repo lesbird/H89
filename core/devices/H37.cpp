@@ -516,4 +516,31 @@ void H37::commitWriteTrack() {
     d->disk.formatTrack(d->cylinder, side_, std::move(track));
 }
 
+void H37::saveState(StateWriter& w) const {
+    w.begin("H37 ");
+    for (const Drive& d : drives_) w.i32(d.cylinder);
+    w.u64(now_), w.u8(control_), w.u8(interface_);
+    for (uint8_t v : {status_, command_, track_, sector_, data_}) w.u8(v);
+    w.boolean(intrq_), w.boolean(drq_), w.boolean(typeIStatus_), w.boolean(interruptOnIndex_);
+    w.u64(lastIndexIrq_), w.i32(side_), w.i32(stepDirection_);
+    w.u8(static_cast<uint8_t>(phase_)), w.u64(eventTime_), w.u64(searchDeadline_);
+    w.i32(stepsLeft_), w.i32(sectorIndex_);
+    w.bytes(buffer_), w.u32(static_cast<uint32_t>(bufferPos_));
+    w.end();
+}
+
+void H37::loadState(StateReader& r) {
+    if (!r.begin("H37 ")) return;
+    for (Drive& d : drives_) d.cylinder = r.i32();
+    now_ = r.u64(), control_ = r.u8(), interface_ = r.u8();
+    for (uint8_t* v : {&status_, &command_, &track_, &sector_, &data_}) *v = r.u8();
+    intrq_ = r.boolean(), drq_ = r.boolean(), typeIStatus_ = r.boolean(), interruptOnIndex_ = r.boolean();
+    lastIndexIrq_ = r.u64(), side_ = r.i32(), stepDirection_ = r.i32();
+    phase_ = static_cast<Phase>(r.u8()), eventTime_ = r.u64(), searchDeadline_ = r.u64();
+    stepsLeft_ = r.i32(), sectorIndex_ = r.i32();
+    buffer_ = r.bytes(), bufferPos_ = r.u32();
+    if (phase_ > Phase::NotFound) r.fail("bad H37 state");
+    r.end();
+}
+
 } // namespace h89

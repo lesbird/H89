@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StateFile.h"
+
 #include <cstdint>
 
 namespace h89 {
@@ -33,6 +35,9 @@ public:
     uint16_t cursorAddress() const { return ((r_[14] & 0x3F) << 8) | r_[15]; }
 
     uint8_t reg(int i) const { return r_[i & 0x1F]; }
+
+    void saveState(StateWriter& w) const;
+    void loadState(StateReader& r);
 
 private:
     uint8_t r_[18]{};

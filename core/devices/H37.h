@@ -1,5 +1,6 @@
 #pragma once
 
+#include "StateFile.h"
 #include "media/SoftDisk.h"
 
 #include <array>
@@ -52,6 +53,10 @@ public:
     SoftDisk& disk(int drive) { return drives_[drive].disk; }
     int headCylinder(int drive) const { return drives_[drive].cylinder; }
     bool busy() const { return status_ & ST_BUSY; }
+
+    // Controller and head state; the disks themselves are saved by path.
+    void saveState(StateWriter& w) const;
+    void loadState(StateReader& r);
 
 private:
     enum : uint8_t {

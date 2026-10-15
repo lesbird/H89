@@ -1,5 +1,6 @@
 #pragma once
 
+#include "StateFile.h"
 #include "media/H17Disk.h"
 
 #include <array>
@@ -48,6 +49,10 @@ public:
     int headTrack(int drive) const { return drives_[drive].track; }
     bool motorOn() const { return control_ & CTL_MOTOR; }
     int selectedDrive() const;
+
+    // Controller and head state; the disks themselves are saved by path.
+    void saveState(StateWriter& w) const;
+    void loadState(StateReader& r);
 
     // H17 checksum: rotate left after XOR, starting from 0 after the sync byte.
     static uint8_t checksum(const uint8_t* bytes, int count, uint8_t start = 0);

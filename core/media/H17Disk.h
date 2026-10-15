@@ -38,6 +38,11 @@ public:
     // True if track 0 sector 9 is an HDOS label consistent with this image.
     bool hasHdosLabel() const;
     void setVolume(int track, uint8_t volume) { volumeOverride_[track] = volume; }
+    // Volumes written by reformatting (part of a saved machine state).
+    const std::map<int, uint8_t>& volumeOverrides() const { return volumeOverride_; }
+    void setVolumeOverrides(std::map<int, uint8_t> v) { volumeOverride_ = std::move(v); }
+    // FNV-1a hash of the image, to notice it changing under a saved state.
+    uint64_t contentHash() const;
 
 private:
     std::vector<uint8_t> data_;

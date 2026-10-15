@@ -71,7 +71,7 @@ roms/       user-supplied, git-ignored
 | 4 🟡 | Front ends + OpenGL, keyboard maps, bell audio | Interactive monitor on both OSes (Mac done; Windows untested; bell is the system beep) |
 | 5 ✅ | H17 + HDOS: hole timing, sync detection, `.h8d` | HDOS 2.0 boots |
 | 6 ✅ | H37 + CP/M: WD1797, `.imd`, ORG-0 | CP/M 2.2 boots (on the H17 and the H37; H37 also boots HDOS and formats SD/DD) |
-| 7 | Extras: CRT shader, ImGui debugger, printer/serial, save states, speed control | Feature-complete |
+| 7 🟡 | Extras: CRT shader, ImGui debugger, printer/serial, save states, speed control | Feature-complete (save states and speed control done) |
 | 8 | Packaging: prefs UI, notarized `.app`, Windows installer | Release |
 
 ## 6. Testing

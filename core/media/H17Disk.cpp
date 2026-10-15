@@ -64,4 +64,10 @@ uint8_t H17Disk::volume(int track) const {
     return data_[9 * kSectorSize];
 }
 
+uint64_t H17Disk::contentHash() const {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint8_t b : data_) h = (h ^ b) * 0x100000001b3ull;
+    return h;
+}
+
 } // namespace h89

@@ -139,4 +139,22 @@ void Ins8250::tick(int cycles) {
     }
 }
 
+void Ins8250::saveState(StateWriter& w) const {
+    w.begin("8250");
+    for (uint8_t v : {rbr_, thr_, tsr_, ier_, lcr_, mcr_, lsr_, msr_, scr_, dll_, dlm_}) w.u8(v);
+    w.boolean(thrFull_), w.boolean(tsrBusy_), w.boolean(threIntPending_);
+    w.i32(txCountdown_), w.i32(rxCountdown_);
+    w.bytes(rxQueue_);
+    w.end();
+}
+
+void Ins8250::loadState(StateReader& r) {
+    if (!r.begin("8250")) return;
+    for (uint8_t* v : {&rbr_, &thr_, &tsr_, &ier_, &lcr_, &mcr_, &lsr_, &msr_, &scr_, &dll_, &dlm_}) *v = r.u8();
+    thrFull_ = r.boolean(), tsrBusy_ = r.boolean(), threIntPending_ = r.boolean();
+    txCountdown_ = r.i32(), rxCountdown_ = r.i32();
+    r.bytes(rxQueue_);
+    r.end();
+}
+
 } // namespace h89

@@ -18,4 +18,20 @@ uint8_t Crtc6845::readData() const {
     return (addr_ >= 14 && addr_ <= 17) ? r_[addr_] : 0x00;
 }
 
+void Crtc6845::saveState(StateWriter& w) const {
+    w.begin("6845");
+    w.bytes(r_, sizeof r_);
+    w.u8(addr_);
+    w.end();
+}
+
+void Crtc6845::loadState(StateReader& r) {
+    if (!r.begin("6845")) return;
+    std::vector<uint8_t> regs = r.bytes();
+    if (regs.size() == sizeof r_) std::copy(regs.begin(), regs.end(), r_);
+    else r.fail("bad 6845 registers");
+    addr_ = r.u8();
+    r.end();
+}
+
 } // namespace h89

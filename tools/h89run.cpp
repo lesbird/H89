@@ -5,7 +5,7 @@
 //          [--rom MTR90.ROM] [--h17rom 444-19.ROM] [--h19rom 444-46.ROM --font 444-29.ROM]
 //          [--sw501 hex] [--ram kb]
 //          [--seconds n] [--type text] [--step "wait|keys"]... [--expect text]
-//          [--screenshot f.pgm] [--trace-io]
+//          [--screenshot f.pgm] [--trace-io] [--load-state f] [--save-state f]
 //
 // With no ROM options, the ROMs are found by part number in the first folder
 // of: --roms, $H89_ROMS, ./roms, and roms/ next to (or one level above) the
@@ -23,6 +23,9 @@
 // text to appear in the computer's output, then types its keys; steps run in
 // order, and the run ends early once they are done and --expect is seen. Without it, it runs in real
 // time interactively; press Ctrl-] to quit.
+//
+// --load-state starts from a saved machine state (remounting its disks);
+// --save-state writes one when the run ends.
 
 #include "Machine.h"
 #include "RomSet.h"
@@ -164,6 +167,7 @@ int main(int argc, char** argv) {
     std::string diskPaths[3];
     std::string h37Paths[4];
     std::string romDir;
+    std::string loadStatePath, saveStatePath;
 
     for (int i = 1; i < argc; ++i) {
         auto arg = [&](const char* name) { return std::strcmp(argv[i], name) == 0 && i + 1 < argc; };
@@ -207,6 +211,10 @@ int main(int argc, char** argv) {
             steps.emplace_back(step.substr(0, bar), step.substr(bar + 1));
         } else if (arg("--expect")) {
             expect = unescape(argv[++i]);
+        } else if (arg("--load-state")) {
+            loadStatePath = argv[++i];
+        } else if (arg("--save-state")) {
+            saveStatePath = argv[++i];
         } else if (std::strcmp(argv[i], "--trace-io") == 0) {
             traceIo = true;
         } else {
@@ -266,6 +274,23 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    if (!loadStatePath.empty()) {
+        std::string err;
+        std::vector<std::string> warnings;
+        std::vector<uint8_t> state = h89::loadFile(loadStatePath, &err);
+        if (state.empty() || !machine.loadState(state, &err, &warnings)) {
+            std::fprintf(stderr, "%s: %s\n", loadStatePath.c_str(), err.c_str());
+            return 2;
+        }
+        for (const auto& w : warnings) std::fprintf(stderr, "warning: %s\n", w.c_str());
+    }
+    auto saveState = [&] {
+        if (saveStatePath.empty()) return;
+        std::vector<uint8_t> state = machine.saveState();
+        std::ofstream out(saveStatePath, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(state.data()), static_cast<std::streamsize>(state.size()));
+        if (!out) std::fprintf(stderr, "cannot write %s\n", saveStatePath.c_str());
+    };
     std::string output;
     machine.consoleOutput = [&](uint8_t b) {
         output += static_cast<char>(b & 0x7F);
@@ -319,6 +344,7 @@ int main(int argc, char** argv) {
                 ms % 500 == 0)
                 break; // let the screen settle briefly, then stop
         }
+        saveState();
         std::string screen;
         if (terminal) {
             screen = terminal->screenText();
@@ -362,7 +388,11 @@ int main(int argc, char** argv) {
         while (inputIdle() && poll(&pfd, 1, 0) > 0) {
             char c;
             if (read(STDIN_FILENO, &c, 1) != 1) break;
-            if (c == 0x1D) return 0; // Ctrl-]
+            if (c == 0x1D) { // Ctrl-]
+                mirror.reset();
+                saveState();
+                return 0;
+            }
             typeKey(static_cast<uint8_t>(c == '\n' ? '\r' : c));
         }
         machine.run(h89::Machine::kCpuHz / 100); // 10 ms slices

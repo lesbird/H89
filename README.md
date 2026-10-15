@@ -81,8 +81,25 @@ build/h8dtool rm   mydisk.h8d HELLO.ASM
 | Keypad 0–9 . ENTER | Numeric keypad |
 | BACK SPACE / DELETE | Backspace (Mac: delete) / Delete (Mac: fn-delete) |
 
-Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour; Windows Ctrl+Alt+R and
-Ctrl+Alt+1/2/3.
+Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour, ⌘T turbo; Windows
+Ctrl+Alt+R, Ctrl+Alt+1/2/3 and Ctrl+Alt+T.
+
+### Speed and saved states
+
+The machine normally runs at its real speed (2.048 MHz). Mac: Machine › Speed
+offers 2×, 4× and Maximum, and ⌘T toggles Maximum (turbo). Windows:
+Ctrl+Alt+T toggles turbo.
+
+A saved state captures the whole machine: memory, both Z80s, the terminal,
+the floppy controllers mid-operation, and which disk images are in the drives.
+The disks themselves stay in their image files, so loading a state never
+overwrites them; you're warned if one has changed or gone missing since the
+save. States only load with the ROMs they were saved with.
+- **Mac:** Machine › Save State… (⌘S) and Load State… (⌘L).
+- **Windows:** Ctrl+Alt+S saves to `h89.state` in the working folder and
+  Ctrl+Alt+L loads it.
+- **h89run:** `--save-state file` when the run ends, `--load-state file` to
+  start from one.
 
 ## Headless runner
 
@@ -107,6 +124,7 @@ Options:
 - `--rom`, `--h17rom`, `--h19rom`, `--font` load individual ROMs instead.
   Without `--h19rom`/`--font`, the console serial port connects straight to
   your terminal.
+- `--save-state f`, `--load-state f`
 - For scripts: `--seconds n` runs that much emulated time as fast as possible
   and prints the final screen. `--step "text|keys"` waits for `text` in the
   output, then types `keys`. `--expect text` sets the exit status.
@@ -136,7 +154,8 @@ cmake --build build --config Release
 build\Release\H89-glfw.exe
 ```
 
-Host shortcuts in the GLFW build: Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor colour.
+Host shortcuts in the GLFW build: Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor
+colour, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L save / load state.
 
 ## Tests
 

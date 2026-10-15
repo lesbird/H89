@@ -268,4 +268,42 @@ std::string H19::screenText() const {
     return text;
 }
 
+void H19::saveState(StateWriter& w) const {
+    w.begin("H19 ");
+    cpu_.saveState(w);
+    ace_.saveState(w);
+    crtc_.saveState(w);
+    w.bytes(ram_);
+    w.bytes(vram_);
+    w.u32(static_cast<uint32_t>(keyQueue_.size()));
+    for (const KeyEvent& k : keyQueue_) w.u8(k.code), w.u8(k.flags);
+    w.boolean(keyLatched_), w.u8(latched_.code), w.u8(latched_.flags);
+    w.u8(lastKeyFlags_), w.i32(keyGapCycles_), w.boolean(breakDown_), w.boolean(offline_);
+    w.i32(frameCycle_), w.boolean(inDisplay_), w.boolean(nmiArmed_);
+    w.bytes(fb_.pixels);
+    w.u64(frames_);
+    w.end();
+}
+
+void H19::loadState(StateReader& r) {
+    if (!r.begin("H19 ")) return;
+    cpu_.loadState(r);
+    ace_.loadState(r);
+    crtc_.loadState(r);
+    r.bytes(ram_);
+    r.bytes(vram_);
+    keyQueue_.clear();
+    for (uint32_t n = r.u32(); n > 0 && r.ok(); --n) {
+        uint8_t code = r.u8();
+        keyQueue_.push_back({code, r.u8()});
+    }
+    keyLatched_ = r.boolean(), latched_.code = r.u8(), latched_.flags = r.u8();
+    lastKeyFlags_ = r.u8(), keyGapCycles_ = r.i32(), breakDown_ = r.boolean(), offline_ = r.boolean();
+    frameCycle_ = r.i32(), inDisplay_ = r.boolean(), nmiArmed_ = r.boolean();
+    std::vector<uint8_t> pixels = r.bytes();
+    if (pixels.size() == fb_.pixels.size()) fb_.pixels = std::move(pixels);
+    frames_ = r.u64();
+    r.end();
+}
+
 } // namespace h89

@@ -210,4 +210,37 @@ void H17::commitWrite() {
     streamDrive_ = -1; // rebuild the stream with the new contents
 }
 
+void H17::saveState(StateWriter& w) const {
+    w.begin("H17 ");
+    for (const Drive& d : drives_) {
+        w.i32(d.track);
+        w.u32(static_cast<uint32_t>(d.disk.volumeOverrides().size()));
+        for (auto [track, volume] : d.disk.volumeOverrides()) w.i32(track), w.u8(volume);
+    }
+    w.u64(now_), w.u8(control_);
+    w.boolean(searching_), w.u64(syncTime_), w.i32(syncIndex_), w.u64(static_cast<uint64_t>(lastRead_));
+    w.u64(txBusyUntil_), w.u64(writeStart_);
+    w.bytes(writeBuffer_);
+    w.end();
+}
+
+void H17::loadState(StateReader& r) {
+    if (!r.begin("H17 ")) return;
+    for (Drive& d : drives_) {
+        d.track = r.i32();
+        std::map<int, uint8_t> volumes;
+        for (uint32_t n = r.u32(); n > 0 && r.ok(); --n) {
+            int track = r.i32();
+            volumes[track] = r.u8();
+        }
+        d.disk.setVolumeOverrides(std::move(volumes));
+    }
+    now_ = r.u64(), control_ = r.u8();
+    searching_ = r.boolean(), syncTime_ = r.u64(), syncIndex_ = r.i32(), lastRead_ = static_cast<int64_t>(r.u64());
+    txBusyUntil_ = r.u64(), writeStart_ = r.u64();
+    writeBuffer_ = r.bytes();
+    streamDrive_ = streamTrack_ = -1; // rebuild the cached track stream
+    r.end();
+}
+
 } // namespace h89
