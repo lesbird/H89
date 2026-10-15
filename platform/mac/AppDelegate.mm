@@ -98,6 +98,12 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 - (void)insertDisk:(NSMenuItem*)sender {
     NSInteger drive = sender.tag;
     NSOpenPanel* panel = [NSOpenPanel openPanel];
+    // Set explicitly: AppKit can hand back a panel still configured by the
+    // ROM-folder chooser (folders only), which greys out every disk image.
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = @"Insert";
     panel.message = [NSString stringWithFormat:@"Choose an H17 disk image (.h8d) for SY%ld:", (long)drive];
     NSButton* readOnly = [NSButton checkboxWithTitle:@"Write protected" target:nil action:nil];
     [readOnly sizeToFit];
