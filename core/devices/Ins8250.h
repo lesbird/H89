@@ -36,6 +36,8 @@ public:
     // Queues a byte from the remote end; it arrives one character time later.
     void receive(uint8_t byte) { rxQueue_.push_back(byte); }
     bool receiveIdle() const { return rxQueue_.empty(); }
+    // Idle and the last byte has been read: another can come without overrun.
+    bool readyForInput() const { return rxQueue_.empty() && !(lsr_ & LSR_DR); }
 
     // Modem status inputs (CTS, DSR, RI, DCD in MSR bits 4-7).
     void setModemInputs(uint8_t msrHighNibble);

@@ -1,6 +1,9 @@
 // Windows (and Linux) front end: GLFW window + OpenGL 3.3 core.
 //
-//   H89-glfw [rom-folder [disk-image...]]
+//   H89-glfw [--printer file] [--modem spec] [--aux spec] [rom-folder [disk-image...]]
+//
+// Serial ports (LP at E0h, MODEM at D8h, AUX at D0h) connect to a file,
+// "listen:PORT" (a TCP client such as telnet) or "connect:HOST:PORT".
 //
 // The ROM folder defaults to "roms" in the working directory. H17 images
 // (.h8d) fill SY0:-SY2: in order and H37 images (.h37, .imd) DK0:-DK3:; if
@@ -12,6 +15,7 @@
 #include <GLFW/glfw3.h>
 
 #include "GLRenderer.h"
+#include "SerialHost.h"
 
 #include <cctype>
 #include <fstream>
@@ -31,6 +35,7 @@ struct App {
     GLFWwindow* window = nullptr;
     bool suppressNextChar = false; // keypad keys also generate a char event
     bool turbo = false;            // run as fast as the host allows
+    h89::SerialHost serial[h89::Machine::kSerialPorts];
 };
 
 // Quick save/load file, in the working directory.
@@ -193,10 +198,22 @@ void onChar(GLFWwindow* window, unsigned int codepoint) {
 } // namespace
 
 int main(int argc, char** argv) {
-    std::string romDir = argc > 1 ? argv[1] : "roms";
+    const char* usage = "Usage: H89-glfw [--printer file] [--modem spec] [--aux spec] [rom-folder [disk-image...]]";
+    std::string serialSpecs[h89::Machine::kSerialPorts];
+    std::vector<const char*> positional;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        int port = a == "--printer" ? h89::Machine::kPrinter
+                 : a == "--modem"   ? h89::Machine::kModem
+                 : a == "--aux"     ? h89::Machine::kAux
+                                    : -1;
+        if (port >= 0 && i + 1 < argc) serialSpecs[port] = argv[++i];
+        else positional.push_back(argv[i]);
+    }
+    std::string romDir = positional.empty() ? "roms" : positional[0];
     h89::RomScan scan = h89::scanRomDirectory(romDir);
     if (!scan.ok()) {
-        showError(scan.error + "\n\nUsage: H89-glfw [rom-folder [disk-image...]]");
+        showError(scan.error + "\n\n" + usage);
         return 1;
     }
 
@@ -227,7 +244,14 @@ int main(int argc, char** argv) {
         App app;
         app.machine = std::make_unique<h89::Machine>(std::move(scan.config));
         app.machine->terminal()->onBell = ringBell;
-        if (argc > 2) insertDisks(app, argc - 2, argv + 2);
+        if (positional.size() > 1)
+            insertDisks(app, static_cast<int>(positional.size() - 1), positional.data() + 1);
+        for (int p = 0; p < h89::Machine::kSerialPorts; ++p) {
+            std::string err;
+            if (!serialSpecs[p].empty() && !app.serial[p].open(serialSpecs[p], &err)) showError(err);
+        }
+        app.machine->serialOutput = [&app](int port, uint8_t b) { app.serial[port].output(b); };
+        app.machine->serialSource = [&app](int port) { return app.serial[port].next(); };
         if (!app.renderer.init()) {
             glfwTerminate();
             return 1;
@@ -246,6 +270,7 @@ int main(int argc, char** argv) {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
 
+            for (int p = 0; p < h89::Machine::kSerialPorts; ++p) app.serial[p].pump(*app.machine, p);
             double now = glfwGetTime();
             pending += now - last;
             last = now;

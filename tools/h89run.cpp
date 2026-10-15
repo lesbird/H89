@@ -6,6 +6,7 @@
 //          [--sw501 hex] [--ram kb]
 //          [--seconds n] [--type text] [--step "wait|keys"]... [--expect text]
 //          [--screenshot f.pgm] [--trace-io] [--load-state f] [--save-state f]
+//          [--printer file] [--modem spec] [--aux spec]
 //
 // With no ROM options, the ROMs are found by part number in the first folder
 // of: --roms, $H89_ROMS, ./roms, and roms/ next to (or one level above) the
@@ -26,9 +27,13 @@
 //
 // --load-state starts from a saved machine state (remounting its disks);
 // --save-state writes one when the run ends.
+//
+// The serial card's ports (LP at E0h, MODEM at D8h, AUX at D0h) connect to a
+// file, "listen:PORT" (a TCP client such as telnet) or "connect:HOST:PORT".
 
 #include "Machine.h"
 #include "RomSet.h"
+#include "SerialHost.h"
 
 #include <chrono>
 #include <cstdio>
@@ -168,6 +173,7 @@ int main(int argc, char** argv) {
     std::string h37Paths[4];
     std::string romDir;
     std::string loadStatePath, saveStatePath;
+    std::string serialSpecs[h89::Machine::kSerialPorts];
 
     for (int i = 1; i < argc; ++i) {
         auto arg = [&](const char* name) { return std::strcmp(argv[i], name) == 0 && i + 1 < argc; };
@@ -211,6 +217,12 @@ int main(int argc, char** argv) {
             steps.emplace_back(step.substr(0, bar), step.substr(bar + 1));
         } else if (arg("--expect")) {
             expect = unescape(argv[++i]);
+        } else if (arg("--printer")) {
+            serialSpecs[h89::Machine::kPrinter] = argv[++i];
+        } else if (arg("--modem")) {
+            serialSpecs[h89::Machine::kModem] = argv[++i];
+        } else if (arg("--aux")) {
+            serialSpecs[h89::Machine::kAux] = argv[++i];
         } else if (arg("--load-state")) {
             loadStatePath = argv[++i];
         } else if (arg("--save-state")) {
@@ -284,6 +296,20 @@ int main(int argc, char** argv) {
         }
         for (const auto& w : warnings) std::fprintf(stderr, "warning: %s\n", w.c_str());
     }
+    h89::SerialHost serialHosts[h89::Machine::kSerialPorts];
+    for (int p = 0; p < h89::Machine::kSerialPorts; ++p) {
+        std::string err;
+        if (!serialSpecs[p].empty() && !serialHosts[p].open(serialSpecs[p], &err)) {
+            std::fprintf(stderr, "%s\n", err.c_str());
+            return 2;
+        }
+    }
+    machine.serialOutput = [&](int port, uint8_t b) { serialHosts[port].output(b); };
+    machine.serialSource = [&](int port) { return serialHosts[port].next(); };
+    auto pumpSerial = [&] {
+        for (int p = 0; p < h89::Machine::kSerialPorts; ++p) serialHosts[p].pump(machine, p);
+    };
+    pumpSerial();
     auto saveState = [&] {
         if (saveStatePath.empty()) return;
         std::vector<uint8_t> state = machine.saveState();
@@ -322,6 +348,7 @@ int main(int argc, char** argv) {
         std::string pending; // keys from a step, typed one at a time
         for (int ms = 0; ms < total; ++ms) {
             machine.run(slice);
+            if (ms % 16 == 0) pumpSerial();
             idleMs = output.size() == lastLen ? idleMs + 1 : 0;
             lastLen = output.size();
             if (typed < typeText.size() && idleMs >= 500 && inputIdle()) {
@@ -396,6 +423,7 @@ int main(int argc, char** argv) {
             typeKey(static_cast<uint8_t>(c == '\n' ? '\r' : c));
         }
         machine.run(h89::Machine::kCpuHz / 100); // 10 ms slices
+        pumpSerial();
         if (mirror) mirror->update(*terminal);
         next += std::chrono::milliseconds(10);
         std::this_thread::sleep_until(next);

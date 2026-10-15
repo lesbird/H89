@@ -133,4 +133,24 @@ TEST_CASE("Console output reaches the host") {
     CHECK_EQ(out, std::string("H"));
 }
 
+TEST_CASE("Serial card echoes MODEM input to the printer port") {
+    RomBuilder b;
+    // 9600 8N1 on D8h (MODEM) and E0h (LP), then copy each byte received on
+    // D8h to E0h.
+    b.at(0x0000, {0x3E, 0x80, 0xD3, 0xDB, 0x3E, 0x0C, 0xD3, 0xD8, 0x3E, 0x00, 0xD3, 0xD9, 0x3E, 0x03, 0xD3, 0xDB,
+                  0x3E, 0x80, 0xD3, 0xE3, 0x3E, 0x0C, 0xD3, 0xE0, 0x3E, 0x00, 0xD3, 0xE1, 0x3E, 0x03, 0xD3, 0xE3,
+                  0xDB, 0xDD, 0xE6, 0x01, 0x28, 0xFA, 0xDB, 0xD8, 0xD3, 0xE0, 0x18, 0xF4});
+    MachineConfig cfg;
+    cfg.monitorRom = b.rom;
+    Machine m(cfg);
+    std::string in = "HELLO", out;
+    size_t next = 0;
+    m.serialSource = [&](int port) { return port == Machine::kModem && next < in.size() ? in[next++] : -1; };
+    m.serialOutput = [&](int port, uint8_t c) {
+        if (port == Machine::kPrinter) out += static_cast<char>(c);
+    };
+    m.run(Machine::kCpuHz / 10); // 100 ms: about 96 characters' time at 9600 baud
+    CHECK_EQ(out, in);
+}
+
 int main() { return check::runAll(); }

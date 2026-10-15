@@ -64,6 +64,17 @@ typedef NS_ENUM(NSInteger, H89Key) {
 - (nullable NSString*)diskPathForDrive:(NSInteger)drive;
 - (BOOL)diskIsReadOnlyInDrive:(NSInteger)drive;
 
+// The serial card's ports: 0 AUX (D0h), 1 MODEM (D8h), 2 LP printer (E0h).
+// A port connects to "file:PATH" (output appended), "listen:PORT" (one TCP
+// client on this Mac) or "connect:HOST:PORT".
+typedef NS_ENUM(NSInteger, H89SerialPort) { H89SerialPortAux, H89SerialPortModem, H89SerialPortPrinter };
+- (BOOL)connectSerialPort:(H89SerialPort)port spec:(NSString*)spec error:(NSError**)error;
+- (void)disconnectSerialPort:(H89SerialPort)port;
+// The spec it was connected with, or nil.
+- (nullable NSString*)serialPortSpec:(H89SerialPort)port;
+// "listening on port 8089", "client connected on port 8089", a file path...
+- (NSString*)serialPortStatus:(H89SerialPort)port;
+
 // Snapshot of the whole machine, including which disks are mounted (by
 // path). Loading fails, leaving the machine as it was, if the state came
 // from different ROMs; `warnings` lists disks that are missing or changed.

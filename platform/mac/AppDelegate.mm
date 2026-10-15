@@ -8,6 +8,11 @@ static NSString* const kRomDirectoryKey = @"RomDirectory";
 static NSString* const kBootFromH37Key = @"BootFromH37";
 static NSString* const kSpeedKey = @"Speed";
 
+static NSString* SerialKey(NSInteger port) {
+    return [NSString stringWithFormat:@"Serial%ldSpec", (long)port];
+}
+static NSString* const kSerialNames[] = {@"AUX (D0h)", @"MODEM (D8h)", @"LP: Printer (E0h)"};
+
 // Machine › Speed: emulated frames per host frame, or 0 for as many as fit.
 static const NSInteger kSpeeds[] = {1, 2, 4, 0};
 
@@ -24,6 +29,7 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSTimeInterval _lastBell;
     NSMenu* _disksMenu;
     NSMutableArray<H89DiskBrowser*>* _browsers;
+    NSMenu* _serialMenu;
     NSInteger _speed;      // frames per tick; 0 = maximum
     NSInteger _lastSpeed;  // to return to from turbo
 }
@@ -93,6 +99,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     _view.emulator = emulator;
     emulator.bootFromH37 = [NSUserDefaults.standardUserDefaults boolForKey:kBootFromH37Key];
     [self restoreDisks];
+    for (NSInteger p = 0; p < 3; ++p) {
+        NSString* spec = [NSUserDefaults.standardUserDefaults stringForKey:SerialKey(p)];
+        if (spec) [emulator connectSerialPort:(H89SerialPort)p spec:spec error:nil];
+    }
     for (H89DiskBrowser* browser in _browsers) {
         browser.emulator = emulator;
         [browser refresh];
@@ -202,6 +212,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 // Rebuilds the Disks menu each time it opens so it shows what is mounted:
 // a submenu per drive, grouped by controller.
 - (void)menuNeedsUpdate:(NSMenu*)menu {
+    if (menu == _serialMenu) {
+        [self rebuildSerialMenu:menu];
+        return;
+    }
     if (menu != _disksMenu) return;
     [menu removeAllItems];
     [menu addItemWithTitle:@"Browse Disk Image…" action:@selector(browseDiskImage:) keyEquivalent:@"O"].target = self;
@@ -287,6 +301,86 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 - (void)toggleTurbo:(id)sender {
     _speed = _speed == 0 ? _lastSpeed : 0;
     [NSUserDefaults.standardUserDefaults setInteger:_speed forKey:kSpeedKey];
+}
+
+#pragma mark - Serial ports
+
+- (void)connectSerial:(NSInteger)port spec:(NSString*)spec {
+    NSError* error = nil;
+    if (![_emulator connectSerialPort:(H89SerialPort)port spec:spec error:&error]) {
+        [[NSAlert alertWithError:error] runModal];
+        return;
+    }
+    [NSUserDefaults.standardUserDefaults setObject:spec forKey:SerialKey(port)];
+}
+
+// Asks for one line of text; nil if cancelled.
+- (nullable NSString*)askFor:(NSString*)question detail:(NSString*)detail initial:(NSString*)initial {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = question;
+    alert.informativeText = detail;
+    [alert addButtonWithTitle:@"OK"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 240, 24)];
+    field.stringValue = initial;
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) return nil;
+    NSString* text = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    return text.length ? text : nil;
+}
+
+- (void)serialToFile:(NSMenuItem*)sender {
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = sender.tag == H89SerialPortPrinter ? @"H89 Printer.txt" : @"H89 Serial.txt";
+    panel.message = @"Output is added to the end of this file.";
+    if ([panel runModal] != NSModalResponseOK) return;
+    [self connectSerial:sender.tag spec:[@"file:" stringByAppendingString:panel.URL.path]];
+}
+
+- (void)serialListen:(NSMenuItem*)sender {
+    NSString* port = [self askFor:@"Listen on which TCP port?"
+                           detail:@"Connect to it from this Mac, for example with: telnet localhost 8089"
+                          initial:@"8089"];
+    if (port) [self connectSerial:sender.tag spec:[@"listen:" stringByAppendingString:port]];
+}
+
+- (void)serialConnect:(NSMenuItem*)sender {
+    NSString* target = [self askFor:@"Connect to which host and port?" detail:@"For example: localhost:2323"
+                            initial:@""];
+    if (target) [self connectSerial:sender.tag spec:[@"connect:" stringByAppendingString:target]];
+}
+
+- (void)serialDisconnect:(NSMenuItem*)sender {
+    [_emulator disconnectSerialPort:(H89SerialPort)sender.tag];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:SerialKey(sender.tag)];
+}
+
+// Rebuilt when opened, to show each port's connection.
+- (void)rebuildSerialMenu:(NSMenu*)menu {
+    [menu removeAllItems];
+    for (NSInteger p = 0; p < 3; ++p) {
+        if (p) [menu addItem:[NSMenuItem separatorItem]];
+        NSString* title = [NSString stringWithFormat:@"%@ — %@", kSerialNames[p],
+                                                     [_emulator serialPortStatus:(H89SerialPort)p]];
+        [menu addItemWithTitle:title action:nil keyEquivalent:@""].enabled = NO;
+        struct {
+            NSString* title;
+            SEL action;
+        } items[] = {
+            {@"Send Output to File…", @selector(serialToFile:)},
+            {@"Listen on TCP Port…", @selector(serialListen:)},
+            {@"Connect to TCP Host…", @selector(serialConnect:)},
+            {@"Disconnect", @selector(serialDisconnect:)},
+        };
+        for (const auto& i : items) {
+            NSMenuItem* item = [menu addItemWithTitle:i.title action:i.action keyEquivalent:@""];
+            item.tag = p;
+            item.target = self;
+            item.indentationLevel = 1;
+            if (i.action == @selector(serialDisconnect:)) item.enabled = [_emulator serialPortSpec:(H89SerialPort)p] != nil;
+        }
+    }
 }
 
 #pragma mark - Save states
@@ -393,6 +487,12 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     }
     speedItem.submenu = speedMenu;
     [machineMenu addItemWithTitle:@"Turbo" action:@selector(toggleTurbo:) keyEquivalent:@"t"].target = self;
+    [machineMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* serialItem = [machineMenu addItemWithTitle:@"Serial Ports" action:nil keyEquivalent:@""];
+    _serialMenu = [[NSMenu alloc] initWithTitle:@"Serial Ports"];
+    _serialMenu.delegate = self;
+    _serialMenu.autoenablesItems = NO;
+    serialItem.submenu = _serialMenu;
     [machineMenu addItem:[NSMenuItem separatorItem]];
     [machineMenu addItemWithTitle:@"Save State…" action:@selector(saveState:) keyEquivalent:@"s"].target = self;
     [machineMenu addItemWithTitle:@"Load State…" action:@selector(loadState:) keyEquivalent:@"l"].target = self;

@@ -46,6 +46,15 @@ add_library(h89core STATIC
 target_include_directories(h89core PUBLIC core)
 target_compile_options(h89core PRIVATE ${H89_WARNINGS})
 
+# --- Host links: serial ports to files and TCP (portable sockets) ------------
+add_library(h89host STATIC host/SerialHost.cpp)
+target_include_directories(h89host PUBLIC host)
+target_link_libraries(h89host PUBLIC h89core)
+target_compile_options(h89host PRIVATE ${H89_WARNINGS})
+if(WIN32)
+    target_link_libraries(h89host PUBLIC ws2_32)
+endif()
+
 # --- OpenGL renderer ----------------------------------------------------------
 add_library(h89render STATIC
     render/GL.cpp
@@ -82,7 +91,7 @@ if(APPLE)
     target_compile_options(H89 PRIVATE -fobjc-arc ${H89_WARNINGS})
     # NSOpenGLView is deprecated but still supported; Metal is a later option.
     target_compile_definitions(H89 PRIVATE GL_SILENCE_DEPRECATION)
-    target_link_libraries(H89 PRIVATE h89core h89render "-framework Cocoa")
+    target_link_libraries(H89 PRIVATE h89host h89render "-framework Cocoa")
 endif()
 
 # --- GLFW app (Windows; optional elsewhere) ------------------------------------
@@ -100,7 +109,7 @@ if(H89_GLFW_FRONTEND)
 
     add_executable(H89-glfw platform/glfw/main.cpp)
     target_compile_options(H89-glfw PRIVATE ${H89_WARNINGS})
-    target_link_libraries(H89-glfw PRIVATE h89core h89render glfw)
+    target_link_libraries(H89-glfw PRIVATE h89host h89render glfw)
     if(WIN32)
         set_target_properties(H89-glfw PROPERTIES WIN32_EXECUTABLE ON)
         if(MSVC)
@@ -116,7 +125,7 @@ target_link_libraries(z80dis PRIVATE h89core)
 
 add_executable(h89run tools/h89run.cpp)
 target_compile_options(h89run PRIVATE ${H89_WARNINGS})
-target_link_libraries(h89run PRIVATE h89core)
+target_link_libraries(h89run PRIVATE h89host)
 
 add_executable(h8dtool tools/h8dtool.cpp)
 target_compile_options(h8dtool PRIVATE ${H89_WARNINGS})

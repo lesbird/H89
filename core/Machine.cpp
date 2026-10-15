@@ -43,6 +43,11 @@ Machine::Machine(MachineConfig config) : config_(std::move(config)), cpu_(*this)
     };
     // The terminal holds CTS, DSR and DCD active.
     console_.setModemInputs(0xB0);
+    for (int p = 0; p < kSerialPorts; ++p) {
+        serial_[p].onTransmit = [this, p](uint8_t b) {
+            if (serialOutput) serialOutput(p, b);
+        };
+    }
     reset();
 }
 
@@ -52,6 +57,7 @@ void Machine::reset() {
     cpu_.reset();
     console_.reset();
     console_.setModemInputs(0xB0);
+    for (Ins8250& s : serial_) s.reset(); // keeps the modem inputs the host set
     gpp_ = 0;
     timerCountdown_ = kTimerCycles;
     timerPending_ = false;
@@ -92,6 +98,7 @@ uint8_t Machine::ioRead(uint16_t port) {
 uint8_t Machine::readPort(uint8_t p) {
     if (h17_ && p >= 0x7C && p <= 0x7F) return h17_->read(p & 3);
     if (h37_ && p >= 0x78 && p <= 0x7B) return h37_->read(p & 3);
+    if (config_.serialCard && p >= 0xD0 && p < 0xE8) return serial_[(p - 0xD0) >> 3].read(p & 7);
     switch (p) {
     case 0xE8: case 0xE9: case 0xEA: case 0xEB:
     case 0xEC: case 0xED: case 0xEE: case 0xEF:
@@ -118,6 +125,10 @@ void Machine::ioWrite(uint16_t port, uint8_t value) {
     if (h37_ && p >= 0x78 && p <= 0x7B) {
         h37_->write(p & 3, value);
         updateIrq();
+        return;
+    }
+    if (config_.serialCard && p >= 0xD0 && p < 0xE8) {
+        serial_[(p - 0xD0) >> 3].write(p & 7, value);
         return;
     }
     switch (p) {
@@ -183,6 +194,17 @@ int Machine::run(int cycles) {
         int t = cpu_.step();
         done += t;
         console_.tick(t);
+        if (config_.serialCard) {
+            for (Ins8250& s : serial_) s.tick(t);
+            if (serialSource && (serialPoll_ -= t) <= 0) {
+                serialPoll_ = 64;
+                for (int p = 0; p < kSerialPorts; ++p) {
+                    if (!serial_[p].readyForInput()) continue;
+                    int b = serialSource(p);
+                    if (b >= 0) serial_[p].receive(static_cast<uint8_t>(b));
+                }
+            }
+        }
         if (h17_) h17_->tick(t);
         if (h37_) h37_->tick(t);
         if (gpp_ & GPP_TIMER_ENABLE) {
@@ -255,11 +277,14 @@ std::vector<uint8_t> Machine::saveState() {
     w.u8(config_.sw501);
     w.i32(config_.ramKB);
     w.boolean(h17_ != nullptr), w.boolean(h37_ != nullptr), w.boolean(terminal_ != nullptr);
+    w.boolean(config_.serialCard);
     w.end();
     saveDisks(w);
     w.begin("H89 ");
     cpu_.saveState(w);
     console_.saveState(w);
+    if (config_.serialCard)
+        for (const Ins8250& s : serial_) s.saveState(w);
     w.bytes(ram_);
     w.bytes(h17Ram_);
     w.u8(gpp_), w.i32(timerCountdown_), w.boolean(timerPending_), w.i32(terminalLag_), w.u64(frames_);
@@ -346,10 +371,10 @@ bool Machine::loadStateUnchecked(const std::vector<uint8_t>& data, std::string* 
     if (r.u64() != romHash()) return fail("This state was saved with different ROMs.");
     uint8_t sw501 = r.u8();
     int ramKB = r.i32();
-    bool hasH17 = r.boolean(), hasH37 = r.boolean(), hasTerminal = r.boolean();
+    bool hasH17 = r.boolean(), hasH37 = r.boolean(), hasTerminal = r.boolean(), hasSerial = r.boolean();
     r.end();
     if (ramKB != config_.ramKB || hasH17 != (h17_ != nullptr) || hasH37 != (h37_ != nullptr) ||
-        hasTerminal != (terminal_ != nullptr))
+        hasTerminal != (terminal_ != nullptr) || hasSerial != config_.serialCard)
         return fail("This state was saved from a differently configured machine.");
     config_.sw501 = sw501;
 
@@ -357,6 +382,8 @@ bool Machine::loadStateUnchecked(const std::vector<uint8_t>& data, std::string* 
     if (r.begin("H89 ")) {
         cpu_.loadState(r);
         console_.loadState(r);
+        if (config_.serialCard)
+            for (Ins8250& s : serial_) s.loadState(r);
         r.bytes(ram_);
         r.bytes(h17Ram_);
         gpp_ = r.u8(), timerCountdown_ = r.i32(), timerPending_ = r.boolean(), terminalLag_ = r.i32();

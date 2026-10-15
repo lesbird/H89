@@ -3,11 +3,13 @@
 
 #include "Machine.h"
 #include "RomSet.h"
+#include "SerialHost.h"
 
 #include <memory>
 
 @implementation H89Emulator {
     std::unique_ptr<h89::Machine> _machine;
+    std::unique_ptr<h89::SerialHost[]> _serial;
     NSString* _romSummary;
 }
 
@@ -24,6 +26,10 @@
     if ((self = [super init])) {
         _machine = std::make_unique<h89::Machine>(std::move(scan.config));
         _romSummary = @(scan.summary.c_str());
+        _serial.reset(new h89::SerialHost[h89::Machine::kSerialPorts]);
+        h89::SerialHost* serial = _serial.get();
+        _machine->serialOutput = [serial](int port, uint8_t b) { serial[port].output(b); };
+        _machine->serialSource = [serial](int port) { return serial[port].next(); };
         __weak H89Emulator* weakSelf = self;
         _machine->terminal()->onBell = [weakSelf] {
             void (^handler)(void) = weakSelf.bellHandler;
@@ -39,7 +45,37 @@
 - (uint64_t)frameCount { return _machine->frameCount(); }
 
 - (void)reset { _machine->reset(); }
-- (void)runFrame { _machine->runFrame(); }
+- (void)runFrame {
+    for (int p = 0; p < h89::Machine::kSerialPorts; ++p) _serial[p].pump(*_machine, p);
+    _machine->runFrame();
+}
+
+- (BOOL)connectSerialPort:(H89SerialPort)port spec:(NSString*)spec error:(NSError**)error {
+    std::string message;
+    if (_serial[port].open(spec.UTF8String, &message)) {
+        _serial[port].pump(*_machine, static_cast<int>(port));
+        return YES;
+    }
+    if (error) {
+        *error = [NSError errorWithDomain:@"H89"
+                                     code:4
+                                 userInfo:@{NSLocalizedDescriptionKey : @(message.c_str())}];
+    }
+    return NO;
+}
+
+- (void)disconnectSerialPort:(H89SerialPort)port {
+    _serial[port].close();
+    _serial[port].pump(*_machine, static_cast<int>(port));
+}
+
+- (nullable NSString*)serialPortSpec:(H89SerialPort)port {
+    return _serial[port].active() ? @(_serial[port].spec().c_str()) : nil;
+}
+
+- (NSString*)serialPortStatus:(H89SerialPort)port {
+    return @(_serial[port].description().c_str());
+}
 
 - (const uint8_t*)framebuffer {
     return _machine->framebuffer().pixels.data();

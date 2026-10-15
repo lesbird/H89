@@ -34,7 +34,7 @@ The core talks to the outside world only through small interfaces
 | ORG-0 / CP/M mapping | GPP `0xF2` (write) swaps ROM out so RAM sits at address 0 |
 | 2 ms timer | Timer interrupt (RST 1), enabled via a GPP bit |
 | SW501 | Read on `0xF2`; disk controller addresses and boot device |
-| Serial (8250) | `0xE8` console (to terminal board), `0xE0` printer, `0xD8` modem, `0xD0` aux |
+| Serial (8250) | `0xE8` console (to terminal board); HA-88-3 card: `0xE0` printer, `0xD8` modem, `0xD0` aux (polled; host side: file or TCP) |
 | H17 floppy | Ports `0x7C–0x7F`, ROM at `0x1800`, RAM at `0x1400`; hard-sectored 10x256, 40 tracks; `.h8d` |
 | H37 floppy | Z-89-37: WD1797 at `0x78–0x7B`; INTRQ on RST 4, DRQ ends a HALT (answered with EI); soft-sectored; `.h37` / `.imd` |
 | Terminal board (H19) | Own Z80 + terminal ROM, 6845 CRTC, 2K video RAM, char ROM, MM5740 keyboard encoder, bell; 80x24 + status line |
@@ -71,7 +71,7 @@ roms/       user-supplied, git-ignored
 | 4 🟡 | Front ends + OpenGL, keyboard maps, bell audio | Interactive monitor on both OSes (Mac done; Windows untested; bell is the system beep) |
 | 5 ✅ | H17 + HDOS: hole timing, sync detection, `.h8d` | HDOS 2.0 boots |
 | 6 ✅ | H37 + CP/M: WD1797, `.imd`, ORG-0 | CP/M 2.2 boots (on the H17 and the H37; H37 also boots HDOS and formats SD/DD) |
-| 7 🟡 | Extras: CRT shader, ImGui debugger, printer/serial, save states, speed control | Feature-complete (save states and speed control done) |
+| 7 🟡 | Extras: CRT shader, ImGui debugger, printer/serial, save states, speed control | Feature-complete (save states, speed control, printer/serial done) |
 | 8 | Packaging: prefs UI, notarized `.app`, Windows installer | Release |
 
 ## 6. Testing

@@ -84,6 +84,23 @@ build/h8dtool rm   mydisk.h8d HELLO.ASM
 Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour, ⌘T turbo; Windows
 Ctrl+Alt+R, Ctrl+Alt+1/2/3 and Ctrl+Alt+T.
 
+### Printer and serial ports
+
+The serial card's three ports can be connected to the host: LP: (the
+printer, at E0h), MODEM (D8h) and AUX (D0h). Each goes to a file (output is
+appended), listens on a local TCP port for one client (`telnet localhost
+8089` or `nc localhost 8089`), or connects out to a TCP host. Input is
+delivered as fast as the H89 reads it, so nothing overruns even at 300 baud.
+- **Mac:** Machine › Serial Ports.
+- **Windows:** `H89-glfw.exe --printer printer.txt --modem listen:8089 roms ...`
+- **h89run:** `--printer file`, `--modem spec`, `--aux spec`, where spec is a
+  path, `listen:PORT` or `connect:HOST:PORT`.
+
+A TCP connection raises CTS, DSR and DCD, as a modem would. A printer file
+leaves them low, which Heath CP/M's printer driver reads as "not busy". In
+Heath CP/M 2.2.03, `PIP LST:=FILE` prints and `PUN:`/`RDR:` use the MODEM
+port, at 300 baud unless CONFIGUR changes it.
+
 ### Speed and saved states
 
 The machine normally runs at its real speed (2.048 MHz). Mac: Machine › Speed
@@ -125,6 +142,7 @@ Options:
   Without `--h19rom`/`--font`, the console serial port connects straight to
   your terminal.
 - `--save-state f`, `--load-state f`
+- `--printer file`, `--modem spec`, `--aux spec` (serial ports, see above)
 - For scripts: `--seconds n` runs that much emulated time as fast as possible
   and prints the final screen. `--step "text|keys"` waits for `text` in the
   output, then types `keys`. `--expect text` sets the exit status.
@@ -155,7 +173,8 @@ build\Release\H89-glfw.exe
 ```
 
 Host shortcuts in the GLFW build: Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor
-colour, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L save / load state.
+colour, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L save / load state. Options
+`--printer`, `--modem` and `--aux` connect the serial ports.
 
 ## Tests
 

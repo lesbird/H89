@@ -29,6 +29,7 @@ struct MachineConfig {
     std::vector<uint8_t> monitorRom; // 2K or 4K at 0000h (MTR-88/89/90)
     std::vector<uint8_t> h17Rom;     // 2K at 1800h; empty means no H-88-1 controller
     bool h37 = true;                 // Z-89-37 soft-sectored controller at 78h
+    bool serialCard = true;          // HA-88-3: 8250s at D0h (AUX), D8h (MODEM), E0h (LP)
     int ramKB = 64;                  // 16, 32, 48 or 64
     uint8_t sw501 = sw501::kNormal;
     // Built-in H19 terminal. Without its ROMs the console serial port is
@@ -72,6 +73,21 @@ public:
     // this only without a built-in terminal; otherwise type on terminal().
     void consoleInput(uint8_t byte) { console_.receive(byte); }
     bool consoleInputIdle() const { return console_.receiveIdle(); }
+
+    // The serial card's ports. They are polled by the stock HDOS and CP/M
+    // drivers, so their interrupt outputs are left unconnected.
+    enum SerialPort { kAux = 0, kModem = 1, kPrinter = 2 };
+    static constexpr int kSerialPorts = 3;
+    static constexpr uint8_t kSerialBase[kSerialPorts] = {0xD0, 0xD8, 0xE0};
+    // Bytes the CPU sends out of a port.
+    std::function<void(int port, uint8_t)> serialOutput;
+    // Bytes arriving at a port: called whenever the port can take one (its
+    // previous byte has been read, so nothing overruns), returning -1 when
+    // there is none. Each arrives one character time later.
+    std::function<int(int port)> serialSource;
+    // Whether a modem-like peer is attached: drives CTS, DSR and DCD. (Heath
+    // printer drivers read CTS high as "busy", so a printer leaves it low.)
+    void setSerialConnected(int port, bool connected) { serial_[port].setModemInputs(connected ? 0xB0 : 0x00); }
 
     // Optional hook called on every I/O port access (for debugging).
     std::function<void(bool write, uint8_t port, uint8_t value)> ioTrace;
@@ -125,10 +141,12 @@ private:
     std::array<uint8_t, 1024> h17Ram_{}; // H-88-1 controller RAM at 1400h
     Z80 cpu_;
     Ins8250 console_{kCpuHz};
+    std::array<Ins8250, kSerialPorts> serial_{Ins8250(kCpuHz), Ins8250(kCpuHz), Ins8250(kCpuHz)};
     std::unique_ptr<H19> terminal_;
     std::unique_ptr<H17> h17_;
     std::unique_ptr<H37> h37_;
     int terminalLag_ = 0; // cycles the terminal is behind the CPU board
+    int serialPoll_ = 0;  // cycles until serialSource is next asked
     uint8_t gpp_ = 0;
     int timerCountdown_ = kTimerCycles;
     bool timerPending_ = false;
