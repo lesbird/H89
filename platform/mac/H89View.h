@@ -15,6 +15,8 @@ typedef NS_ENUM(NSInteger, H89Phosphor) {
 
 @property(nonatomic, strong, nullable) H89Emulator* emulator;
 @property(nonatomic) H89Phosphor phosphor;
+// Phosphor persistence, glow and a curved screen (on by default).
+@property(nonatomic) BOOL crtEffects;
 
 - (instancetype)initWithFrame:(NSRect)frame;
 

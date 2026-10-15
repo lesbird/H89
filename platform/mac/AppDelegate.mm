@@ -7,6 +7,7 @@
 static NSString* const kRomDirectoryKey = @"RomDirectory";
 static NSString* const kBootFromH37Key = @"BootFromH37";
 static NSString* const kSpeedKey = @"Speed";
+static NSString* const kCrtEffectsKey = @"CRTEffects";
 
 static NSString* SerialKey(NSInteger port) {
     return [NSString stringWithFormat:@"Serial%ldSpec", (long)port];
@@ -48,6 +49,8 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     _window.contentMinSize = NSMakeSize(320, 240);
 
     _view = [[H89View alloc] initWithFrame:frame];
+    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+    _view.crtEffects = [defaults objectForKey:kCrtEffectsKey] ? [defaults boolForKey:kCrtEffectsKey] : YES;
     _window.contentView = _view;
     [_window center];
     [_window makeKeyAndOrderFront:nil];
@@ -441,6 +444,11 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     [self startEmulatorPrompting:YES];
 }
 
+- (void)toggleCrtEffects:(id)sender {
+    _view.crtEffects = !_view.crtEffects;
+    [NSUserDefaults.standardUserDefaults setBool:_view.crtEffects forKey:kCrtEffectsKey];
+}
+
 - (void)choosePhosphor:(NSMenuItem*)sender {
     _view.phosphor = (H89Phosphor)sender.tag;
 }
@@ -454,6 +462,9 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     }
     if (item.action == @selector(toggleBootDevice:)) {
         item.state = _emulator.bootFromH37 ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if (item.action == @selector(toggleCrtEffects:)) {
+        item.state = _view.crtEffects ? NSControlStateValueOn : NSControlStateValueOff;
     }
     if (item.action == @selector(choosePhosphor:)) {
         item.state = item.tag == _view.phosphor ? NSControlStateValueOn : NSControlStateValueOff;
@@ -523,6 +534,8 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
         item.tag = i;
         item.target = self;
     }
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+    [viewMenu addItemWithTitle:@"CRT Effects" action:@selector(toggleCrtEffects:) keyEquivalent:@""].target = self;
     [viewMenu addItem:[NSMenuItem separatorItem]];
     [viewMenu addItemWithTitle:@"Enter Full Screen"
                         action:@selector(toggleFullScreen:)

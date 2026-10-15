@@ -84,6 +84,11 @@ build/h8dtool rm   mydisk.h8d HELLO.ASM
 Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour, ⌘T turbo; Windows
 Ctrl+Alt+R, Ctrl+Alt+1/2/3 and Ctrl+Alt+T.
 
+The screen is drawn like a CRT: phosphor persistence (short for white P4,
+longer for green and amber), a soft glow, scanlines and a gently curved tube
+face. Turn it off with View › CRT Effects (Mac) or Ctrl+Alt+C (Windows) for a
+flat, crisp picture.
+
 ### Printer and serial ports
 
 The serial card's three ports can be connected to the host: LP: (the
@@ -173,7 +178,8 @@ build\Release\H89-glfw.exe
 ```
 
 Host shortcuts in the GLFW build: Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor
-colour, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L save / load state. Options
+colour, Ctrl+Alt+C CRT effects, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L
+save / load state. Options
 `--printer`, `--modem` and `--aux` connect the serial ports.
 
 ## Tests

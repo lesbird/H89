@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <initializer_list>
 #include <string>
 #include <vector>
 

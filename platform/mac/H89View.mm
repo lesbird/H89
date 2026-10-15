@@ -51,6 +51,15 @@ constexpr unichar kBreakKey = NSF10FunctionKey;
     if (!_rendererReady) NSLog(@"H89: OpenGL renderer failed to initialise");
 }
 
+- (BOOL)crtEffects {
+    return _renderer.effects();
+}
+
+- (void)setCrtEffects:(BOOL)on {
+    _renderer.setEffects(on);
+    self.needsDisplay = YES;
+}
+
 - (void)setPhosphor:(H89Phosphor)phosphor {
     _phosphor = phosphor;
     switch (phosphor) {

@@ -43,6 +43,11 @@ using GLchar = char;
 #define GL_CLAMP_TO_EDGE 0x812F
 #define GL_R8 0x8229
 #define GL_RED 0x1903
+#define GL_TEXTURE1 0x84C1
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
 
 // X-macro list of every post-1.1 function the renderer uses.
 #define H89_GL_FUNCTIONS(X)                                                              \
@@ -67,7 +72,12 @@ using GLchar = char;
     X(void, glGenVertexArrays, (GLsizei n, GLuint* a))                                   \
     X(void, glBindVertexArray, (GLuint a))                                               \
     X(void, glDeleteVertexArrays, (GLsizei n, const GLuint* a))                          \
-    X(void, glActiveTexture, (GLenum t))
+    X(void, glActiveTexture, (GLenum t))                                                 \
+    X(void, glGenFramebuffers, (GLsizei n, GLuint* f))                                   \
+    X(void, glBindFramebuffer, (GLenum target, GLuint f))                                \
+    X(void, glFramebufferTexture2D, (GLenum target, GLenum att, GLenum tt, GLuint t, GLint level)) \
+    X(GLenum, glCheckFramebufferStatus, (GLenum target))                                 \
+    X(void, glDeleteFramebuffers, (GLsizei n, const GLuint* f))
 
 #define H89_GL_DECLARE(ret, name, args)                                                  \
     using PFN_##name = ret(APIENTRY*) args;                                              \

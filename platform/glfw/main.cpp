@@ -86,6 +86,7 @@ void onKey(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) 
     if ((mods & hostMods) == hostMods) {
         switch (key) {
         case GLFW_KEY_R: app->machine->reset(); break;
+        case GLFW_KEY_C: app->renderer.setEffects(!app->renderer.effects()); break;
         case GLFW_KEY_T:
             app->turbo = !app->turbo;
             updateTitle(*app);
