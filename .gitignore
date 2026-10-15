@@ -4,7 +4,5 @@ out/
 *.xcuserstate
 xcuserdata/
 .vs/
-roms/*
-!roms/README.md
 tests/data/
-disks/
+dist/

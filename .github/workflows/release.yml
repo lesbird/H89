@@ -1,0 +1,102 @@
+name: Release
+
+# Builds the macOS .dmg and the Windows installer and .zip. Pushing a tag
+# such as v1.0.0 also publishes them as a GitHub release; running the
+# workflow by hand just leaves them as downloadable artifacts.
+#
+# Optional secrets for a signed, notarized Mac build (without them the app
+# is signed ad hoc):
+#   MACOS_CERTIFICATE           Developer ID Application certificate + key,
+#                               exported as .p12 and base64-encoded
+#   MACOS_CERTIFICATE_PASSWORD  the .p12's password
+#   MACOS_SIGN_IDENTITY         e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build, sign and package
+        env:
+          H89_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          [ -n "$MACOS_CERTIFICATE" ] || unset H89_SIGN_IDENTITY
+          tools/package_mac.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) { choco install nsis -y --no-progress }
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DH89_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        working-directory: build
+        run: cpack -C Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            build/H89-*.exe
+            build/H89-*.zip
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "H89 $GITHUB_REF_NAME" --generate-notes

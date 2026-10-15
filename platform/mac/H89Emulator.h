@@ -20,9 +20,13 @@ typedef NS_ENUM(NSInteger, H89Key) {
 @interface H89Emulator : NSObject
 
 // Loads the ROMs from `directory`; returns nil and sets `error` if any
-// required ROM is missing.
+// required ROM is missing. `preferMTR89` picks the MTR-89 monitor when the
+// folder has both; `memoryKB` is 16, 32, 48 or 64.
 - (nullable instancetype)initWithRomDirectory:(NSString*)directory
+                                  preferMTR89:(BOOL)preferMTR89
+                                     memoryKB:(NSInteger)memoryKB
                                         error:(NSError**)error NS_DESIGNATED_INITIALIZER;
+- (nullable instancetype)initWithRomDirectory:(NSString*)directory error:(NSError**)error;
 - (instancetype)init NS_UNAVAILABLE;
 
 // Which ROM files were loaded, one per line.
@@ -35,6 +39,8 @@ typedef NS_ENUM(NSInteger, H89Key) {
 // Called on the emulation thread (currently the main thread) when the H19
 // rings its bell.
 @property(nonatomic, copy, nullable) void (^bellHandler)(void);
+// Called likewise when the H19 clicks for a key press.
+@property(nonatomic, copy, nullable) void (^keyClickHandler)(void);
 
 - (void)reset;
 // Advances emulation by one 1/60 s frame, unless the debugger has paused it.
@@ -57,6 +63,9 @@ typedef NS_ENUM(NSInteger, H89Key) {
 // Boot from the H37 (SW501 section 4) instead of the H17; takes effect at
 // the next boot.
 @property(nonatomic) BOOL bootFromH37;
+// MTR-90 boots the primary device at power-on and reset, without waiting
+// for the B command (SW501 section 8).
+@property(nonatomic) BOOL autoBoot;
 - (BOOL)insertDiskAtPath:(NSString*)path
                    drive:(NSInteger)drive
                 readOnly:(BOOL)readOnly

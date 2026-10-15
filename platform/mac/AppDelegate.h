@@ -1,4 +1,6 @@
 #import <Cocoa/Cocoa.h>
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
+#import "H89Preferences.h"
+
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate, H89PreferencesDelegate>
 @end

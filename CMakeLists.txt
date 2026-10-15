@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(H89 VERSION 0.1.0 LANGUAGES C CXX)
+project(H89 VERSION 1.0.0 LANGUAGES C CXX)
 
 if(APPLE)
     enable_language(OBJC OBJCXX)
@@ -22,6 +22,9 @@ endif()
 option(H89_BUILD_TESTS "Build unit tests and the ZEX harness" ON)
 option(H89_GLFW_FRONTEND "Build the GLFW front end (default on Windows)" ${H89_GLFW_DEFAULT})
 option(H89_DEBUGGER "Build the Dear ImGui debugger into the front ends" ON)
+
+set(H89_VENDOR "Les Bird")
+set(H89_COPYRIGHT "Copyright (C) 2026 Les Bird")
 
 if(MSVC)
     set(H89_WARNINGS /W4 /permissive- /wd4201) # 4201: anonymous struct in RegPair
@@ -49,12 +52,15 @@ target_include_directories(h89core PUBLIC core)
 target_compile_options(h89core PRIVATE ${H89_WARNINGS})
 
 # --- Host links: serial ports to files and TCP (portable sockets) ------------
-add_library(h89host STATIC host/SerialHost.cpp)
+add_library(h89host STATIC
+    host/AppFiles.cpp
+    host/SerialHost.cpp
+)
 target_include_directories(h89host PUBLIC host)
 target_link_libraries(h89host PUBLIC h89core)
 target_compile_options(h89host PRIVATE ${H89_WARNINGS})
 if(WIN32)
-    target_link_libraries(h89host PUBLIC ws2_32)
+    target_link_libraries(h89host PUBLIC ws2_32 shell32)
 endif()
 
 # --- OpenGL renderer ----------------------------------------------------------
@@ -97,6 +103,13 @@ if(H89_DEBUGGER)
     endif()
 endif()
 
+# --- Bundled ROMs and disks -----------------------------------------------------
+# The apps ship with the ROMs (raw images only) and the starter disks in roms/
+# and disks/.
+file(GLOB H89_BUNDLED_ROMS ${CMAKE_SOURCE_DIR}/roms/*.[bB][iI][nN] ${CMAKE_SOURCE_DIR}/roms/*.[rR][oO][mM])
+file(GLOB H89_BUNDLED_DISKS ${CMAKE_SOURCE_DIR}/disks/*.[hH]8[dD] ${CMAKE_SOURCE_DIR}/disks/*.[hH]37
+     ${CMAKE_SOURCE_DIR}/disks/*.[iI][mM][dD])
+
 # --- macOS app (Objective-C++) ------------------------------------------------
 if(APPLE)
     add_executable(H89 MACOSX_BUNDLE
@@ -105,10 +118,19 @@ if(APPLE)
         platform/mac/H89View.mm
         platform/mac/H89Emulator.mm
         platform/mac/H89DiskBrowser.mm
+        platform/mac/H89Preferences.mm
+        platform/mac/H89.icns
+        ${H89_BUNDLED_ROMS}
+        ${H89_BUNDLED_DISKS}
     )
+    set_source_files_properties(platform/mac/H89.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    set_source_files_properties(${H89_BUNDLED_ROMS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/roms)
+    set_source_files_properties(${H89_BUNDLED_DISKS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/disks)
     set_target_properties(H89 PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/platform/mac/Info.plist.in
         MACOSX_BUNDLE_GUI_IDENTIFIER com.h89emu.H89
+        MACOSX_BUNDLE_ICON_FILE H89.icns
+        MACOSX_BUNDLE_COPYRIGHT "Copyright © 2026 ${H89_VENDOR}"
         MACOSX_BUNDLE_BUNDLE_NAME H89
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
@@ -141,11 +163,16 @@ if(H89_GLFW_FRONTEND)
     target_compile_options(H89-glfw PRIVATE ${H89_WARNINGS})
     target_link_libraries(H89-glfw PRIVATE h89host h89render glfw)
     if(H89_DEBUGGER)
-        target_sources(H89-glfw PRIVATE ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp)
+        target_sources(H89-glfw PRIVATE
+            platform/glfw/SettingsPanel.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp)
         target_link_libraries(H89-glfw PRIVATE h89debug)
     endif()
     if(WIN32)
-        set_target_properties(H89-glfw PROPERTIES WIN32_EXECUTABLE ON)
+        configure_file(platform/glfw/H89.rc.in ${CMAKE_BINARY_DIR}/H89.rc @ONLY)
+        target_sources(H89-glfw PRIVATE ${CMAKE_BINARY_DIR}/H89.rc)
+        set_target_properties(H89-glfw PROPERTIES WIN32_EXECUTABLE ON OUTPUT_NAME H89)
+        target_link_libraries(H89-glfw PRIVATE winmm comdlg32 ole32 shell32)
         if(MSVC)
             target_link_options(H89-glfw PRIVATE /ENTRY:mainCRTStartup)
         endif()
@@ -164,6 +191,42 @@ target_link_libraries(h89run PRIVATE h89host)
 add_executable(h8dtool tools/h8dtool.cpp)
 target_compile_options(h8dtool PRIVATE ${H89_WARNINGS})
 target_link_libraries(h8dtool PRIVATE h89core)
+
+# --- Packaging ------------------------------------------------------------------
+# macOS: tools/package_mac.sh signs, notarizes and wraps H89.app in a .dmg.
+# Windows: cpack -C Release builds an installer (NSIS) and a .zip holding
+# H89.exe, the command-line tools, roms\ and disks\.
+if(APPLE)
+    install(TARGETS H89 BUNDLE DESTINATION .)
+elseif(H89_GLFW_FRONTEND)
+    install(TARGETS H89-glfw h89run h8dtool RUNTIME DESTINATION .)
+    install(FILES ${H89_BUNDLED_ROMS} DESTINATION roms)
+    install(FILES ${H89_BUNDLED_DISKS} DESTINATION disks)
+    install(FILES README.md DESTINATION .)
+endif()
+
+set(CPACK_PACKAGE_NAME "H89")
+set(CPACK_PACKAGE_VENDOR "${H89_VENDOR}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Heathkit H89 emulator")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/lesbird/H89")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "H89")
+set(CPACK_PACKAGE_EXECUTABLES "H89;H89 Emulator")
+set(CPACK_PACKAGE_FILE_NAME "H89-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}")
+if(WIN32)
+    set(CPACK_GENERATOR "NSIS;ZIP")
+    set(CPACK_NSIS_DISPLAY_NAME "H89 Emulator")
+    set(CPACK_NSIS_PACKAGE_NAME "H89 Emulator ${PROJECT_VERSION}")
+    set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/platform/glfw/H89.ico")
+    set(CPACK_NSIS_MUI_UNIICON "${CMAKE_SOURCE_DIR}/platform/glfw/H89.ico")
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "H89.exe")
+    set(CPACK_NSIS_URL_INFO_ABOUT "${CPACK_PACKAGE_HOMEPAGE_URL}")
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_NSIS_MUI_FINISHPAGE_RUN "H89.exe")
+    set(CPACK_CREATE_DESKTOP_LINKS "H89")
+else()
+    set(CPACK_GENERATOR "ZIP")
+endif()
+include(CPack)
 
 # --- Tests --------------------------------------------------------------------
 if(H89_BUILD_TESTS)
@@ -184,13 +247,18 @@ if(H89_BUILD_TESTS)
     target_link_libraries(diskfiles_tests PRIVATE h89core)
     add_test(NAME diskfiles_tests COMMAND diskfiles_tests)
 
+    add_executable(appfiles_tests tests/appfiles_tests.cpp)
+    target_compile_options(appfiles_tests PRIVATE ${H89_WARNINGS})
+    target_link_libraries(appfiles_tests PRIVATE h89host)
+    add_test(NAME appfiles_tests COMMAND appfiles_tests)
+
     add_executable(h37_tests tests/h37_tests.cpp)
     target_compile_options(h37_tests PRIVATE ${H89_WARNINGS})
     target_link_libraries(h37_tests PRIVATE h89core)
     add_test(NAME h37_tests COMMAND h37_tests WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
-    # Boot tests against real ROMs, registered only when they are present in
-    # roms/ (they are copyrighted and not distributed).
+    # Boot tests against the ROMs in roms/, registered only when they are
+    # there.
     # Finds one raw ROM image (not an Intel HEX copy) matching `pattern`.
     function(h89_find_rom var pattern)
         file(GLOB matches ${CMAKE_SOURCE_DIR}/roms/${pattern})

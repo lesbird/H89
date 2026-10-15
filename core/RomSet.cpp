@@ -19,7 +19,7 @@ std::string lower(std::string s) {
 
 } // namespace
 
-RomScan scanRomDirectory(const std::string& dir) {
+RomScan scanRomDirectory(const std::string& dir, bool preferMtr89) {
     RomScan scan;
     std::vector<fs::path> files;
     std::error_code ec;
@@ -47,12 +47,10 @@ RomScan scanRomDirectory(const std::string& dir) {
         return true;
     };
 
-    fs::path monitor = find("444-142");
-    const char* monitorName = "Monitor (MTR-90)";
-    if (monitor.empty()) {
-        monitor = find("444-62");
-        monitorName = "Monitor (MTR-89)";
-    }
+    fs::path mtr90 = find("444-142"), mtr89 = find("444-62");
+    bool use89 = mtr90.empty() || (preferMtr89 && !mtr89.empty());
+    fs::path monitor = use89 ? mtr89 : mtr90;
+    const char* monitorName = use89 ? "Monitor (MTR-89)" : "Monitor (MTR-90)";
 
     std::vector<std::string> missing;
     if (!load(monitor, scan.config.monitorRom, monitorName))

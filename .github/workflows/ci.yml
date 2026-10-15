@@ -26,3 +26,14 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      # Checks the Windows installer still builds; the Release workflow
+      # publishes it.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: build
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) { choco install nsis -y --no-progress }
+          $env:PATH += ";C:\Program Files (x86)\NSIS"
+          cpack -C Release

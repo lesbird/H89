@@ -7,10 +7,13 @@
 #import "H89Emulator.h"
 #import "H89View.h"
 
-static NSString* const kRomDirectoryKey = @"RomDirectory";
-static NSString* const kBootFromH37Key = @"BootFromH37";
-static NSString* const kSpeedKey = @"Speed";
-static NSString* const kCrtEffectsKey = @"CRTEffects";
+#include "AppFiles.h"
+
+#include <string>
+#include <vector>
+
+// Set once the disks bundled with the app have been copied for the user.
+static NSString* const kDisksInstalledKey = @"DisksInstalled";
 
 static NSString* SerialKey(NSInteger port) {
     return [NSString stringWithFormat:@"Serial%ldSpec", (long)port];
@@ -40,6 +43,19 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 #endif
     NSInteger _speed;      // frames per tick; 0 = maximum
     NSInteger _lastSpeed;  // to return to from turbo
+    H89Preferences* _preferences;
+    H89Bell _bell;
+    BOOL _keyClick;
+    NSSound* _bellSound;
+    NSSound* _clickSound;
+}
+
+static NSUserDefaults* Defaults() {
+    return NSUserDefaults.standardUserDefaults;
+}
+
+static NSSound* SoundFromWav(const std::vector<uint8_t>& wav) {
+    return [[NSSound alloc] initWithData:[NSData dataWithBytes:wav.data() length:wav.size()]];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
@@ -56,19 +72,16 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     _window.contentMinSize = NSMakeSize(320, 240);
 
     _view = [[H89View alloc] initWithFrame:frame];
-    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
-    _view.crtEffects = [defaults objectForKey:kCrtEffectsKey] ? [defaults boolForKey:kCrtEffectsKey] : YES;
     _window.contentView = _view;
     [_window center];
     [_window makeKeyAndOrderFront:nil];
     [_window makeFirstResponder:_view];
     [NSApp activateIgnoringOtherApps:YES];
 
-    _speed = [NSUserDefaults.standardUserDefaults objectForKey:kSpeedKey]
-                 ? [NSUserDefaults.standardUserDefaults integerForKey:kSpeedKey]
-                 : 1;
-    _lastSpeed = _speed ? _speed : 1;
-    if (![self startEmulatorPrompting:NO]) {
+    _bellSound = SoundFromWav(h89::makeBellSound());
+    _clickSound = SoundFromWav(h89::makeKeyClickSound());
+    [self installDisks];
+    if (![self startEmulator]) {
         [NSApp terminate:nil];
         return;
     }
@@ -87,44 +100,204 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 #endif
 }
 
-// Loads the ROMs from the H89_ROMS environment variable or the saved folder,
-// asking for a folder when those fail (or always, if `prompt`). Returns NO if
-// the user cancels.
-- (BOOL)startEmulatorPrompting:(BOOL)prompt {
+- (nullable NSString*)builtInRomDirectory {
+    NSString* dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"roms"];
+    return [NSFileManager.defaultManager fileExistsAtPath:dir] ? dir : nil;
+}
+
+- (H89Emulator*)emulatorWithRoms:(NSString*)dir error:(NSError**)error {
+    NSUserDefaults* d = Defaults();
+    return [[H89Emulator alloc] initWithRomDirectory:dir
+                                         preferMTR89:[d integerForKey:H89MonitorKey] == 89
+                                            memoryKB:[d objectForKey:H89MemoryKey] ? [d integerForKey:H89MemoryKey] : 64
+                                               error:error];
+}
+
+// (Re)builds the machine from the settings: the ROMs come from the H89_ROMS
+// environment variable, the chosen folder, or the ones built into the app,
+// in that order. If none load, asks for a folder; returns NO if the user
+// cancels.
+- (BOOL)startEmulator {
+    NSUserDefaults* d = Defaults();
+    NSString* builtIn = [self builtInRomDirectory];
     NSString* dir = NSProcessInfo.processInfo.environment[@"H89_ROMS"];
-    if (!dir) dir = [NSUserDefaults.standardUserDefaults stringForKey:kRomDirectoryKey];
+    if (!dir) dir = [d stringForKey:H89RomDirectoryKey];
+    if (!dir) dir = builtIn;
 
     NSError* error = nil;
-    H89Emulator* emulator = nil;
-    if (dir && !prompt) emulator = [[H89Emulator alloc] initWithRomDirectory:dir error:&error];
-
+    H89Emulator* emulator = dir ? [self emulatorWithRoms:dir error:&error] : nil;
+    if (!emulator && builtIn && ![dir isEqualToString:builtIn]) {
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = @"Using the ROMs built into H89";
+        alert.informativeText = error.localizedDescription;
+        [alert runModal];
+        [d removeObjectForKey:H89RomDirectoryKey];
+        emulator = [self emulatorWithRoms:builtIn error:&error];
+    }
     while (!emulator) {
         NSString* message = error ? error.localizedDescription
                                   : @"Choose the folder containing your H89 and H19 ROM images.";
         dir = [self chooseRomDirectoryWithMessage:message];
         if (!dir) return NO;
-        emulator = [[H89Emulator alloc] initWithRomDirectory:dir error:&error];
+        emulator = [self emulatorWithRoms:dir error:&error];
+        if (emulator) [d setObject:dir forKey:H89RomDirectoryKey];
     }
 
-    [NSUserDefaults.standardUserDefaults setObject:dir forKey:kRomDirectoryKey];
     __weak AppDelegate* weakSelf = self;
     emulator.bellHandler = ^{ [weakSelf ringBell]; };
+    emulator.keyClickHandler = ^{ [weakSelf keyClick]; };
     _emulator = emulator;
     _view.emulator = emulator;
 #if H89_DEBUGGER
     _debuggerView.emulator = emulator;
 #endif
-    emulator.bootFromH37 = [NSUserDefaults.standardUserDefaults boolForKey:kBootFromH37Key];
+    for (H89DiskBrowser* browser in _browsers) browser.emulator = emulator;
+    [self preferencesChanged];
     [self restoreDisks];
+    for (H89DiskBrowser* browser in _browsers) [browser refresh];
+    // Last, once the old machine is gone, so a listening port is free again.
     for (NSInteger p = 0; p < 3; ++p) {
-        NSString* spec = [NSUserDefaults.standardUserDefaults stringForKey:SerialKey(p)];
+        NSString* spec = [d stringForKey:SerialKey(p)];
         if (spec) [emulator connectSerialPort:(H89SerialPort)p spec:spec error:nil];
     }
-    for (H89DiskBrowser* browser in _browsers) {
-        browser.emulator = emulator;
-        [browser refresh];
-    }
     return YES;
+}
+
+#pragma mark - Settings
+
+- (void)showPreferences:(id)sender {
+    if (!_preferences) _preferences = [[H89Preferences alloc] initWithDelegate:self];
+    [_preferences show];
+}
+
+- (void)preferencesChangedMachine {
+    [self startEmulator];
+}
+
+// Applies every setting except the machine's make-up.
+- (void)preferencesChanged {
+    NSUserDefaults* d = Defaults();
+    _speed = [d objectForKey:H89SpeedKey] ? [d integerForKey:H89SpeedKey] : 1;
+    if (_speed) _lastSpeed = _speed;
+    else if (!_lastSpeed) _lastSpeed = 1;
+    NSInteger phosphor = [d integerForKey:H89PhosphorKey];
+    _view.phosphor = phosphor >= H89PhosphorWhite && phosphor <= H89PhosphorAmber ? (H89Phosphor)phosphor
+                                                                                   : H89PhosphorWhite;
+    _view.crtEffects = ![d objectForKey:H89CrtEffectsKey] || [d boolForKey:H89CrtEffectsKey];
+    _bell = (H89Bell)[d integerForKey:H89BellKey];
+    _keyClick = ![d objectForKey:H89KeyClickKey] || [d boolForKey:H89KeyClickKey];
+    _emulator.bootFromH37 = [d boolForKey:H89BootFromH37Key];
+    _emulator.autoBoot = [d boolForKey:H89AutoBootKey];
+    [self updateTitle];
+    [_preferences reload];
+}
+
+#pragma mark - Bundled disks
+
+- (NSString*)disksDirectory {
+    return @(h89::userDisksDir().c_str());
+}
+
+- (nullable NSString*)bundledDisksDirectory {
+    NSString* dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"disks"];
+    return [NSFileManager.defaultManager fileExistsAtPath:dir] ? dir : nil;
+}
+
+// The first time H89 runs, copies the disks that come with it to the user's
+// disks folder and, if no disks are mounted yet, puts them in the drives:
+// HDOS and CP/M for the H17 in SY0: and SY1:, and for the H37 in DK0: and DK1:.
+- (void)installDisks {
+    NSUserDefaults* d = Defaults();
+    NSString* bundled = [self bundledDisksDirectory];
+    if (!bundled || [d boolForKey:kDisksInstalledKey]) return;
+    NSString* dir = [self disksDirectory];
+    std::string error;
+    h89::copyBundledFiles(bundled.fileSystemRepresentation, dir.fileSystemRepresentation, false, &error);
+    if (!error.empty()) NSLog(@"H89: %s", error.c_str());
+    [d setBool:YES forKey:kDisksInstalledKey];
+
+    for (NSInteger drive = 0; drive < H89FirstH37Drive + 4; ++drive)
+        if ([d stringForKey:DiskKey(drive, @"Path")]) return;
+    for (const auto& [drive, path] : h89::starterDisks(dir.fileSystemRepresentation)) {
+        [d setObject:@(path.c_str()) forKey:DiskKey(drive, @"Path")];
+        [d setBool:NO forKey:DiskKey(drive, @"ReadOnly")];
+    }
+}
+
+- (void)showDisksFolder:(id)sender {
+    NSString* dir = [self disksDirectory];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:dir isDirectory:YES]];
+}
+
+// Replaces the user's copies of the bundled disks with fresh ones, taking
+// them out of the drives while they are copied.
+- (void)restoreOriginalDisks {
+    NSString* bundled = [self bundledDisksDirectory];
+    if (!bundled) return;
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = @"Restore the original disks?";
+    alert.informativeText = @"Your copies of the disks that came with H89 are replaced by fresh ones, losing any "
+                            @"changes made to them, including files copied onto them. Other disks in the folder "
+                            @"are not touched.";
+    [alert addButtonWithTitle:@"Restore"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+
+    NSString* dir = [self disksDirectory];
+    NSArray<NSString*>* originals = [NSFileManager.defaultManager contentsOfDirectoryAtPath:bundled error:nil];
+    NSMutableDictionary<NSNumber*, NSNumber*>* remount = [NSMutableDictionary dictionary];
+    for (NSInteger drive = 0; drive < _emulator.driveCount; ++drive) {
+        NSString* path = [_emulator diskPathForDrive:drive];
+        if ([path.stringByDeletingLastPathComponent isEqualToString:dir] &&
+            [originals containsObject:path.lastPathComponent]) {
+            remount[@(drive)] = @([_emulator diskIsReadOnlyInDrive:drive]);
+            [_emulator ejectDrive:drive];
+        }
+    }
+    std::string error;
+    h89::copyBundledFiles(bundled.fileSystemRepresentation, dir.fileSystemRepresentation, true, &error);
+    for (NSNumber* drive in remount) {
+        NSString* path = [Defaults() stringForKey:DiskKey(drive.integerValue, @"Path")];
+        [_emulator insertDiskAtPath:path drive:drive.integerValue readOnly:remount[drive].boolValue error:nil];
+    }
+    for (H89DiskBrowser* browser in _browsers) [browser refresh];
+    [self updateTitle];
+    if (!error.empty()) {
+        NSAlert* failed = [[NSAlert alloc] init];
+        failed.messageText = @"Some disks could not be restored.";
+        failed.informativeText = @(error.c_str());
+        [failed runModal];
+    }
+}
+
+- (void)restoreOriginalDisks:(id)sender {
+    [self restoreOriginalDisks];
+}
+
+// Disk images opened from the Finder go in the first empty drive that takes
+// them (or the first such drive, if all are full).
+- (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
+    if (!_emulator) return;
+    for (NSURL* url in urls) {
+        BOOL h17 = [url.pathExtension caseInsensitiveCompare:@"h8d"] == NSOrderedSame;
+        NSInteger first = h17 ? 0 : H89FirstH37Drive, last = h17 ? H89FirstH37Drive : _emulator.driveCount;
+        NSInteger drive = first;
+        for (NSInteger d = first; d < last; ++d) {
+            if ([_emulator driveIsAvailable:d] && ![_emulator diskPathForDrive:d]) {
+                drive = d;
+                break;
+            }
+        }
+        NSError* error = nil;
+        if (![_emulator insertDiskAtPath:url.path drive:drive readOnly:NO error:&error]) {
+            [[NSAlert alertWithError:error] runModal];
+            continue;
+        }
+        [Defaults() setObject:url.path forKey:DiskKey(drive, @"Path")];
+        [Defaults() setBool:NO forKey:DiskKey(drive, @"ReadOnly")];
+    }
+    [self updateTitle];
 }
 
 #pragma mark - Disks
@@ -221,9 +394,8 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 }
 
 - (void)toggleBootDevice:(id)sender {
-    _emulator.bootFromH37 = !_emulator.bootFromH37;
-    [NSUserDefaults.standardUserDefaults setBool:_emulator.bootFromH37 forKey:kBootFromH37Key];
-    [self updateTitle];
+    [Defaults() setBool:!_emulator.bootFromH37 forKey:H89BootFromH37Key];
+    [self preferencesChanged];
 }
 
 // Rebuilds the Disks menu each time it opens so it shows what is mounted:
@@ -236,6 +408,11 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     if (menu != _disksMenu) return;
     [menu removeAllItems];
     [menu addItemWithTitle:@"Browse Disk Image…" action:@selector(browseDiskImage:) keyEquivalent:@"O"].target = self;
+    [menu addItemWithTitle:@"Show Disks Folder" action:@selector(showDisksFolder:) keyEquivalent:@""].target = self;
+    if ([self bundledDisksDirectory]) {
+        [menu addItemWithTitle:@"Restore Original Disks…" action:@selector(restoreOriginalDisks:)
+                 keyEquivalent:@""].target = self;
+    }
     for (NSInteger d = 0; d < _emulator.driveCount; ++d) {
         BOOL h37 = [_emulator driveIsH37:d];
         if (d == 0 || d == H89FirstH37Drive) {
@@ -288,9 +465,20 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     // The firmware can ring in bursts (e.g. a full key buffer); one beep per
     // burst is plenty.
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
-    if (now - _lastBell < 0.15) return;
+    if (_bell == H89BellOff || now - _lastBell < 0.15) return;
     _lastBell = now;
-    NSBeep();
+    if (_bell == H89BellSystem) {
+        NSBeep();
+    } else {
+        [_bellSound stop];
+        [_bellSound play];
+    }
+}
+
+- (void)keyClick {
+    if (!_keyClick || _speed != 1) return; // clicks would pile up when running fast
+    [_clickSound stop];
+    [_clickSound play];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
@@ -336,14 +524,13 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 #endif
 
 - (void)chooseSpeed:(NSMenuItem*)sender {
-    _speed = sender.tag;
-    if (_speed) _lastSpeed = _speed;
-    [NSUserDefaults.standardUserDefaults setInteger:_speed forKey:kSpeedKey];
+    [Defaults() setInteger:sender.tag forKey:H89SpeedKey];
+    [self preferencesChanged];
 }
 
 - (void)toggleTurbo:(id)sender {
-    _speed = _speed == 0 ? _lastSpeed : 0;
-    [NSUserDefaults.standardUserDefaults setInteger:_speed forKey:kSpeedKey];
+    [Defaults() setInteger:_speed == 0 ? _lastSpeed : 0 forKey:H89SpeedKey];
+    [self preferencesChanged];
 }
 
 #pragma mark - Serial ports
@@ -464,7 +651,7 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
             [defaults removeObjectForKey:DiskKey(d, @"Path")];
         }
     }
-    [defaults setBool:_emulator.bootFromH37 forKey:kBootFromH37Key];
+    [defaults setBool:_emulator.bootFromH37 forKey:H89BootFromH37Key];
     [self updateTitle];
     for (H89DiskBrowser* browser in _browsers) [browser refresh];
     _view.needsDisplay = YES;
@@ -480,17 +667,30 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     [_emulator reset];
 }
 
-- (void)chooseRomFolder:(id)sender {
-    [self startEmulatorPrompting:YES];
-}
-
 - (void)toggleCrtEffects:(id)sender {
-    _view.crtEffects = !_view.crtEffects;
-    [NSUserDefaults.standardUserDefaults setBool:_view.crtEffects forKey:kCrtEffectsKey];
+    [Defaults() setBool:!_view.crtEffects forKey:H89CrtEffectsKey];
+    [self preferencesChanged];
 }
 
 - (void)choosePhosphor:(NSMenuItem*)sender {
-    _view.phosphor = (H89Phosphor)sender.tag;
+    [Defaults() setInteger:sender.tag forKey:H89PhosphorKey];
+    [self preferencesChanged];
+}
+
+- (void)showAbout:(id)sender {
+    NSString* credits = [NSString stringWithFormat:@"A Heathkit H89 (Zenith Z-89) emulator: the CPU board, H19 "
+                                                   @"terminal, H17 and H37 floppy controllers.\n\n%@",
+                                                   _emulator.romSummary ?: @""];
+    NSMutableParagraphStyle* style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentCenter;
+    NSAttributedString* text = [[NSAttributedString alloc]
+        initWithString:credits
+            attributes:@{
+                NSFontAttributeName : [NSFont systemFontOfSize:NSFont.smallSystemFontSize],
+                NSForegroundColorAttributeName : NSColor.labelColor,
+                NSParagraphStyleAttributeName : style,
+            }];
+    [NSApp orderFrontStandardAboutPanelWithOptions:@{NSAboutPanelOptionCredits : text}];
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
@@ -517,9 +717,11 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 
     NSMenuItem* appItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
     NSMenu* appMenu = [[NSMenu alloc] init];
-    [appMenu addItemWithTitle:@"About H89"
-                       action:@selector(orderFrontStandardAboutPanel:)
-                keyEquivalent:@""];
+    [appMenu addItemWithTitle:@"About H89" action:@selector(showAbout:) keyEquivalent:@""].target = self;
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Settings…" action:@selector(showPreferences:) keyEquivalent:@","].target = self;
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Hide H89" action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"Quit H89" action:@selector(terminate:) keyEquivalent:@"q"];
     appItem.submenu = appMenu;
@@ -555,10 +757,6 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     // SW501 section 4: which controller the monitor's B command boots.
     [machineMenu addItemWithTitle:@"Boot from H37 (DK0:)"
                            action:@selector(toggleBootDevice:)
-                    keyEquivalent:@""].target = self;
-    [machineMenu addItem:[NSMenuItem separatorItem]];
-    [machineMenu addItemWithTitle:@"Choose ROM Folder…"
-                           action:@selector(chooseRomFolder:)
                     keyEquivalent:@""].target = self;
     machineItem.submenu = machineMenu;
 

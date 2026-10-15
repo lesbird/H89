@@ -16,7 +16,14 @@
 }
 
 - (nullable instancetype)initWithRomDirectory:(NSString*)directory error:(NSError**)error {
-    h89::RomScan scan = h89::scanRomDirectory(directory.fileSystemRepresentation);
+    return [self initWithRomDirectory:directory preferMTR89:NO memoryKB:64 error:error];
+}
+
+- (nullable instancetype)initWithRomDirectory:(NSString*)directory
+                                  preferMTR89:(BOOL)preferMTR89
+                                     memoryKB:(NSInteger)memoryKB
+                                        error:(NSError**)error {
+    h89::RomScan scan = h89::scanRomDirectory(directory.fileSystemRepresentation, preferMTR89);
     if (!scan.ok()) {
         if (error) {
             *error = [NSError errorWithDomain:@"H89"
@@ -26,6 +33,7 @@
         return nil;
     }
     if ((self = [super init])) {
+        scan.config.ramKB = memoryKB == 16 || memoryKB == 32 || memoryKB == 48 ? static_cast<int>(memoryKB) : 64;
         _machine = std::make_unique<h89::Machine>(std::move(scan.config));
         _romSummary = @(scan.summary.c_str());
         _serial.reset(new h89::SerialHost[h89::Machine::kSerialPorts]);
@@ -35,6 +43,10 @@
         __weak H89Emulator* weakSelf = self;
         _machine->terminal()->onBell = [weakSelf] {
             void (^handler)(void) = weakSelf.bellHandler;
+            if (handler) handler();
+        };
+        _machine->terminal()->onKeyClick = [weakSelf] {
+            void (^handler)(void) = weakSelf.keyClickHandler;
             if (handler) handler();
         };
     }
@@ -124,6 +136,15 @@ static constexpr NSInteger kH37Drives = h89::H37::kDrives;
 - (void)setBootFromH37:(BOOL)h37 {
     uint8_t sw = _machine->config().sw501 & ~h89::sw501::kBootFrom170;
     _machine->setSw501(h37 ? (sw | h89::sw501::kBootFrom170) : sw);
+}
+
+- (BOOL)autoBoot {
+    return (_machine->config().sw501 & h89::sw501::kAutoBoot) != 0;
+}
+
+- (void)setAutoBoot:(BOOL)autoBoot {
+    uint8_t sw = _machine->config().sw501 & ~h89::sw501::kAutoBoot;
+    _machine->setSw501(autoBoot ? (sw | h89::sw501::kAutoBoot) : sw);
 }
 
 - (BOOL)insertDiskAtPath:(NSString*)path

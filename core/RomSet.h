@@ -18,6 +18,7 @@ struct RomScan {
 //   monitor  444-142 (MTR-90), else 444-62 (MTR-89)   required
 //   H17      444-19                                   optional
 //   H19      444-46 firmware and 444-29 font          required
-RomScan scanRomDirectory(const std::string& dir);
+// With `preferMtr89`, MTR-89 is used when both monitors are there.
+RomScan scanRomDirectory(const std::string& dir, bool preferMtr89 = false);
 
 } // namespace h89

@@ -4,7 +4,8 @@ A Heathkit H89 emulator: portable C++ core, Objective-C++ front end on macOS,
 GLFW front end on Windows, OpenGL rendering on both. See [PLAN.md](PLAN.md) for
 the architecture and milestones.
 
-**Status:** milestones 0–3 and 5–7 are done, and 4 is mostly done.
+**Status:** version 1.0. Every milestone in the plan is done; the Windows
+build is built and packaged by CI but has had little hands-on testing.
 - The Z80 passes ZEXDOC and ZEXALL, including undocumented flags.
 - The CPU board boots MTR-89 and MTR-90.
 - The H19 terminal is fully emulated: its own Z80 runs the real 444-46
@@ -15,13 +16,54 @@ the architecture and milestones.
 - The H37 (Z-89-37, WD1797) controller boots HDOS 2.0 and CP/M 2.2.03 from
   single-density disks. Single- and double-density reading, writing and
   formatting (CP/M FORMAT) work.
-- The Mac app is interactive. The Windows build is written but untested.
+- The Mac app and the Windows program come with the ROMs and with HDOS 2.0
+  and CP/M 2.2.03 boot disks for both controllers.
+
+## Installing
+
+Download a release from the
+[Releases page](https://github.com/lesbird/H89/releases), or build it (see
+[Building](#building)).
+- **macOS 11 or later** (Apple silicon or Intel): open
+  `H89-<version>-macOS.dmg` and drag H89 to Applications. If the build isn't
+  notarized, the first time open it with right-click › Open (or System
+  Settings › Privacy & Security › Open Anyway).
+- **Windows 10 or later:** run `H89-<version>-Windows.exe` to install
+  (Start menu and desktop shortcuts), or unzip `H89-<version>-Windows.zip`
+  anywhere and run `H89.exe`.
 
 ## Running
 
-On first launch the Mac app asks for your ROM folder (see [ROMs](#roms)) and
-remembers it; change it with Machine › Choose ROM Folder…. On Windows, pass the
-folder on the command line: `H89-glfw.exe path\to\roms` (default `roms`).
+H89 starts at the MTR-90 monitor's `H:` prompt with disks already in the
+drives: HDOS 2.0 in SY0:, CP/M 2.2.03 in SY1:, and the H37 CP/M and HDOS
+disks in DK0: and DK1:. Type `B` then Return to boot HDOS from SY0:. To boot
+from the H37 instead, choose it in Settings (Boot from).
+
+The first time it runs, H89 copies its disks to a folder of your own, so
+changing them never touches the originals: `~/Library/Application
+Support/H89/Disks` on the Mac and `Documents\H89\Disks` on Windows. Restore
+Original Disks (Mac: Disks menu or Settings; Windows: Settings › Disks) puts
+fresh copies back.
+
+### Settings
+
+- **Mac:** H89 › Settings… (⌘,).
+- **Windows:** Ctrl+Alt+P shows the settings panel. It opens by itself the
+  first time and lists the keyboard shortcuts under Keys.
+
+Settings cover:
+- the ROMs: the built-in ones or a folder of your own (see [ROMs](#roms))
+- the monitor (MTR-90 or MTR-89)
+- memory (16K to 64K)
+- the boot device (H17 or H37), and whether to boot at power-on (SW501
+  section 8)
+- speed
+- phosphor colour and CRT effects
+- the bell (the H19's speaker, the system alert sound, or off) and key click
+
+Changing the ROMs, monitor or memory restarts the machine. On Windows the
+panel also has tabs for the drives, the serial ports and saved states.
+Settings are kept in `%APPDATA%\H89\settings.ini` on Windows.
 
 ### Disks
 
@@ -32,9 +74,13 @@ ImageDisk files (`.imd`).
 - **Mac:** use the Disks menu (⌘O inserts into SY0:). Mounted disks are
   remembered between launches. To boot from the H37, tick Machine › Boot from
   H37 (DK0:); this sets SW501 section 4, as on the real board.
-- **Windows:** pass images after the ROM folder (`H89-glfw.exe roms hdos.h8d`),
-  or drop them on the window. `.h8d` images fill SY0: onwards and others DK0:
-  onwards; if the first image is an H37 one, the machine boots from the H37.
+- **Windows:** use the Disks tab in Settings, drop images on the window, or
+  pass them on the command line (`H89.exe hdos.h8d`). Dropped and
+  command-line images fill SY0: onwards (`.h8d`) or DK0: onwards (others);
+  if the first one is an H37 image, the machine boots from the H37. Disks
+  stay in their drives between runs.
+- **Mac:** double-clicking an `.h8d`, `.h37` or `.imd` file also inserts it,
+  into the first empty drive of its kind.
 
 Writes go straight back to the image file, like a real disk. Tick "Write
 protected" in the Mac open dialog (or use `--ro` with `h89run`) to keep an
@@ -81,8 +127,13 @@ build/h8dtool rm   mydisk.h8d HELLO.ASM
 | Keypad 0–9 . ENTER | Numeric keypad |
 | BACK SPACE / DELETE | Backspace (Mac: delete) / Delete (Mac: fn-delete) |
 
-Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour, ⌘T turbo; Windows
-Ctrl+Alt+R, Ctrl+Alt+1/2/3 and Ctrl+Alt+T.
+Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour, ⌘T turbo, ⌘, settings;
+Windows Ctrl+Alt+R, Ctrl+Alt+1/2/3, Ctrl+Alt+T and Ctrl+Alt+P.
+
+The H19's speaker is reproduced: a 2 kHz bell (its 2.048 MHz clock divided
+by 1024) and a short click for each key, which the terminal's own firmware
+asks for, so the key click obeys the H19's settings. Clicks are muted
+above normal speed.
 
 The screen is drawn like a CRT: phosphor persistence (short for white P4,
 longer for green and amber), a soft glow, scanlines and a gently curved tube
@@ -111,7 +162,9 @@ appended), listens on a local TCP port for one client (`telnet localhost
 8089` or `nc localhost 8089`), or connects out to a TCP host. Input is
 delivered as fast as the H89 reads it, so nothing overruns even at 300 baud.
 - **Mac:** Machine › Serial Ports.
-- **Windows:** `H89-glfw.exe --printer printer.txt --modem listen:8089 roms ...`
+- **Windows:** the Serial Ports tab in Settings, or
+  `H89.exe --printer printer.txt --modem listen:8089`. Connections are
+  remembered.
 - **h89run:** `--printer file`, `--modem spec`, `--aux spec`, where spec is a
   path, `listen:PORT` or `connect:HOST:PORT`.
 
@@ -132,8 +185,8 @@ The disks themselves stay in their image files, so loading a state never
 overwrites them; you're warned if one has changed or gone missing since the
 save. States only load with the ROMs they were saved with.
 - **Mac:** Machine › Save State… (⌘S) and Load State… (⌘L).
-- **Windows:** Ctrl+Alt+S saves to `h89.state` in the working folder and
-  Ctrl+Alt+L loads it.
+- **Windows:** Settings › States saves and loads state files. Ctrl+Alt+S and
+  Ctrl+Alt+L save and load a quick state, `Documents\H89\H89.h89state`.
 - **h89run:** `--save-state file` when the run ends, `--load-state file` to
   start from one.
 
@@ -188,13 +241,34 @@ open build/Release/H89.app          # build/H89.app for single-config generators
 ```sh
 cmake -S . -B build                 # Visual Studio generator; fetches GLFW 3.4
 cmake --build build --config Release
-build\Release\H89-glfw.exe
+build\Release\H89.exe
 ```
 
-Host shortcuts in the GLFW build: Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor
-colour, Ctrl+Alt+C CRT effects, Ctrl+Alt+D debugger, Ctrl+Alt+T turbo,
-Ctrl+Alt+S / Ctrl+Alt+L save / load state. Options
-`--printer`, `--modem` and `--aux` connect the serial ports.
+The program finds `roms\` and `disks\` next to itself, or in the source tree
+when run from the build folder. Host shortcuts: Ctrl+Alt+P settings,
+Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor colour, Ctrl+Alt+C CRT effects,
+Ctrl+Alt+D debugger, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L save / load
+the quick state. Options `--printer`, `--modem` and `--aux` connect the
+serial ports; a folder given on the command line is used for the ROMs.
+
+### Packaging a release
+
+- **macOS:** `tools/package_mac.sh` builds a universal app and writes
+  `dist/H89-<version>-macOS.dmg`. Set `H89_SIGN_IDENTITY` to a "Developer ID
+  Application" certificate to sign it for distribution, plus
+  `H89_NOTARY_PROFILE` (a `notarytool store-credentials` profile) or
+  `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` to notarize it.
+  Without an identity it is signed ad hoc.
+- **Windows:** `cpack -C Release` in the build folder writes an NSIS
+  installer and a `.zip` (NSIS must be installed).
+- **GitHub:** pushing a tag like `v1.0.0` runs the Release workflow, which
+  builds both and publishes them as a GitHub release. It signs and
+  notarizes the Mac build when the secrets listed at the top of
+  `.github/workflows/release.yml` are set.
+
+The version is in `CMakeLists.txt` (`project(H89 VERSION ...)`). The app
+icon is drawn by `tools/make_icon.swift`; `tools/make_icons.sh` regenerates
+`H89.icns` and `H89.ico` from it.
 
 ## Tests
 
@@ -208,9 +282,10 @@ ctest --test-dir build -C Release -LE slow  # unit tests only
 
 ## ROMs
 
-The H89 and H19 ROMs and disk images are copyrighted and are not included. Put
-raw binary dumps in a folder; files are recognised by the part number in their
-names:
+The ROMs in `roms/` are built into the apps. To use others, choose a folder
+in Settings (or set `H89_ROMS` on the Mac, or pass the folder to `h89run`
+with `--roms`). Put raw binary dumps in it; files are recognised by the part
+number in their names:
 
 | Part | ROM | |
 |---|---|---|
@@ -219,6 +294,9 @@ names:
 | 444-29 | H19 character generator | required |
 | 444-19 | H17 floppy boot ROM | optional (needed for disks) |
 
-The repo's `roms/` and `disks/` folders are git-ignored. When ROMs (and
-`*HDOS*.h8d` / `*CPM*.h8d` images) are there, CMake also registers boot,
-terminal and disk tests that use them. Disk tests mount images read-only.
+CMake also registers boot, terminal and disk tests that use the ROMs in
+`roms/` and the `*HDOS*` / `*CPM*` images in `disks/`. Disk tests mount
+images read-only.
+
+The ROMs and disk images are Heath/Zenith software, included for preserving
+and running these machines.

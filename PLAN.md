@@ -68,11 +68,11 @@ roms/       user-supplied, git-ignored
 | 1 ✅ | Z80 core | ZEXDOC/ZEXALL pass under a CP/M test harness |
 | 2 ✅ | CPU board, headless: bus, ROM, RAM, GPP, timer, 8250 to stdout | MTR-90 prints its `H:` prompt |
 | 3 ✅ | Terminal board: 2nd Z80, terminal ROM, 6845, char ROM | Power-on screen renders to PNG |
-| 4 🟡 | Front ends + OpenGL, keyboard maps, bell audio | Interactive monitor on both OSes (Mac done; Windows untested; bell is the system beep) |
+| 4 🟡 | Front ends + OpenGL, keyboard maps, bell audio | Interactive monitor on both OSes (Mac done; Windows built and packaged by CI but not run by hand; H19 bell and key click) |
 | 5 ✅ | H17 + HDOS: hole timing, sync detection, `.h8d` | HDOS 2.0 boots |
 | 6 ✅ | H37 + CP/M: WD1797, `.imd`, ORG-0 | CP/M 2.2 boots (on the H17 and the H37; H37 also boots HDOS and formats SD/DD) |
 | 7 ✅ | Extras: CRT shader, ImGui debugger, printer/serial, save states, speed control | Feature-complete |
-| 8 | Packaging: prefs UI, notarized `.app`, Windows installer | Release |
+| 8 ✅ | Packaging: prefs UI, notarized `.app`, Windows installer | Release (1.0: settings UIs, bundled ROMs and disks, universal `.dmg` with signing/notarization script, NSIS installer, release workflow) |
 
 ## 6. Testing
 
@@ -86,5 +86,7 @@ roms/       user-supplied, git-ignored
 - macOS OpenGL is deprecated (max 4.1): keep GL behind `GLRenderer` so a Metal
   backend can be added later.
 - H17 timing is the hardest part: model 300 RPM rotation and hole pulses in cycles.
-- ROMs and disk images are copyrighted: load from a user folder, never bundle.
+- ROMs and disk images are Heath/Zenith software. The project bundles the
+  monitor, H17 and H19 ROMs and the HDOS 2.0 / CP/M 2.2.03 boot disks (the
+  owner's decision for 1.0); a user ROM folder can still replace them.
 - High-DPI: render native 640x250, scale in the shader.
