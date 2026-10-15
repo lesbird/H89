@@ -1,0 +1,10 @@
+build*/
+out/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+.vs/
+roms/*
+!roms/README.md
+tests/data/
+disks/

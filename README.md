@@ -1,0 +1,121 @@
+# H89
+
+A Heathkit H89 emulator: portable C++ core, Objective-C++ front end on macOS,
+GLFW front end on Windows, OpenGL rendering on both. See [PLAN.md](PLAN.md) for
+the architecture and milestones.
+
+**Status:** milestones 0–3 and 5 are done, and 4 is mostly done.
+- The Z80 passes ZEXDOC and ZEXALL, including undocumented flags.
+- The CPU board boots MTR-89 and MTR-90.
+- The H19 terminal is fully emulated: its own Z80 runs the real 444-46
+  firmware, with the 6845 CRTC, the 444-29 font, the 8250 serial link and the
+  keyboard.
+- The H17 floppy controller boots HDOS 2.0 and Heath CP/M 2.2.03. Reading,
+  writing and formatting (HDOS INIT) all work.
+- The Mac app is interactive. The Windows build is written but untested.
+
+## Running
+
+On first launch the Mac app asks for your ROM folder (see [ROMs](#roms)) and
+remembers it; change it with Machine › Choose ROM Folder…. On Windows, pass the
+folder on the command line: `H89-glfw.exe path\to\roms` (default `roms`).
+
+### Disks
+
+H17 disk images (`.h8d`, 102,400 bytes) go in drives SY0:–SY2:.
+- **Mac:** use the Disks menu (⌘O inserts into SY0:). Mounted disks are
+  remembered between launches.
+- **Windows:** pass images after the ROM folder (`H89-glfw.exe roms hdos.h8d`),
+  or drop them on the window.
+
+Writes go straight back to the image file, like a real disk. Tick "Write
+protected" in the Mac open dialog (or use `--ro` with `h89run`) to keep an
+image unchanged. To boot, type `B` then Return at the MTR-90 `H:` prompt.
+
+### Keyboard
+
+| H19 key | Host key |
+|---|---|
+| F1–F5 | F1–F5 |
+| ERASE, BLUE, RED, WHITE | F6, F7, F8, F9 |
+| BREAK | F10 (held) |
+| SCROLL | Page Down |
+| Cursor keys (shifted keypad) | Arrow keys, Home |
+| Keypad 0–9 . ENTER | Numeric keypad |
+| BACK SPACE / DELETE | Backspace (Mac: delete) / Delete (Mac: fn-delete) |
+
+Host shortcuts: Mac ⌘R reset, ⌘1/2/3 phosphor colour; Windows Ctrl+Alt+R and
+Ctrl+Alt+1/2/3.
+
+## Headless runner
+
+`h89run` runs the machine without a window:
+
+```sh
+# Full machine: types through the H19 keyboard and prints its screen
+build/h89run --rom roms/2732_444-142_MTR90.ROM --h17rom roms/2716_444-19_H17.ROM \
+    --h19rom roms/2732_444-46_H19CODE.BIN --font roms/2716_444-29_H19FONT.BIN \
+    --seconds 5 --type "S0000\r" --screenshot screen.pgm
+
+# CPU board only: console serial port on your terminal (Ctrl-] quits)
+build/h89run --rom roms/2732_444-142_MTR90.ROM --h17rom roms/2716_444-19_H17.ROM
+```
+
+Other options: `--disk0/1/2 image.h8d`, `--ro` (mount disks write-protected),
+`--sw501 hex` (default `20`), `--ram kb`, `--trace-io`, `--expect text` (exit
+status for scripted tests), and `--step "text|keys"`, which waits for `text`
+in the output and then types `keys`:
+
+```sh
+build/h89run ... --ro --disk0 disks/HDOS_2-0_System.h8d --seconds 120 \
+    --step 'H: |B\r' --step 'ACTION?|\r' --step ')?|14-Oct-86\r' --step '>|CAT\r'
+```
+
+## Building
+
+Requires CMake 3.21+ and a C++20 compiler.
+
+### macOS
+
+```sh
+cmake -S . -B build -G Xcode        # or -G Ninja, or omit for Makefiles
+cmake --build build --config Release
+open build/Release/H89.app          # build/H89.app for single-config generators
+```
+
+### Windows
+
+```sh
+cmake -S . -B build                 # Visual Studio generator; fetches GLFW 3.4
+cmake --build build --config Release
+build\Release\H89-glfw.exe
+```
+
+Host shortcuts in the GLFW build: Ctrl+Alt+R reset, Ctrl+Alt+1/2/3 phosphor colour.
+
+## Tests
+
+```sh
+tools/fetch_zex.sh                  # downloads ZEXDOC/ZEXALL into tests/data/
+cmake -S . -B build                 # re-run so the ZEX tests get registered
+cmake --build build
+ctest --test-dir build -C Release           # all tests (ZEX takes ~40 s each)
+ctest --test-dir build -C Release -LE slow  # unit tests only
+```
+
+## ROMs
+
+The H89 and H19 ROMs and disk images are copyrighted and are not included. Put
+raw binary dumps in a folder; files are recognised by the part number in their
+names:
+
+| Part | ROM | |
+|---|---|---|
+| 444-142 or 444-62 | MTR-90 or MTR-89 monitor | required |
+| 444-46 | H19 terminal firmware | required |
+| 444-29 | H19 character generator | required |
+| 444-19 | H17 floppy boot ROM | optional (needed for disks) |
+
+The repo's `roms/` and `disks/` folders are git-ignored. When ROMs (and
+`*HDOS*.h8d` / `*CPM*.h8d` images) are there, CMake also registers boot,
+terminal and disk tests that use them. Disk tests mount images read-only.
