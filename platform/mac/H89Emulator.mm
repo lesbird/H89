@@ -1,4 +1,5 @@
 #import "H89Emulator.h"
+#import "H89Emulator+Core.h"
 
 #include "Machine.h"
 #include "RomSet.h"
@@ -75,6 +76,11 @@
     if (!_machine->h17() || drive < 0 || drive >= self.driveCount) return nil;
     const h89::H17Disk& disk = _machine->h17()->disk(static_cast<int>(drive));
     return disk.loaded() ? @(disk.path().c_str()) : nil;
+}
+
+- (nullable h89::H17Disk*)diskForDrive:(NSInteger)drive {
+    if (!_machine->h17() || drive < 0 || drive >= self.driveCount) return nullptr;
+    return &_machine->h17()->disk(static_cast<int>(drive));
 }
 
 - (BOOL)diskIsReadOnlyInDrive:(NSInteger)drive {

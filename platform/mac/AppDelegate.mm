@@ -1,5 +1,6 @@
 #import "AppDelegate.h"
 
+#import "H89DiskBrowser.h"
 #import "H89Emulator.h"
 #import "H89View.h"
 
@@ -17,6 +18,7 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     NSTimer* _timer;
     NSTimeInterval _lastBell;
     NSMenu* _disksMenu;
+    NSMutableArray<H89DiskBrowser*>* _browsers;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
@@ -79,6 +81,10 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     _emulator = emulator;
     _view.emulator = emulator;
     [self restoreDisks];
+    for (H89DiskBrowser* browser in _browsers) {
+        browser.emulator = emulator;
+        [browser refresh];
+    }
     return YES;
 }
 
@@ -130,6 +136,39 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
     [self updateTitle];
 }
 
+// Shows the files in a disk image, reusing its window if one is open.
+- (void)browseDiskAtPath:(NSString*)path {
+    if (!_browsers) _browsers = [NSMutableArray array];
+    for (H89DiskBrowser* browser in [_browsers copy]) {
+        if (!browser.window.isVisible) {
+            [_browsers removeObject:browser];
+        } else if ([browser.path isEqualToString:path]) {
+            [browser refresh];
+            [browser showWindow:nil];
+            return;
+        }
+    }
+    H89DiskBrowser* browser = [[H89DiskBrowser alloc] initWithPath:path emulator:_emulator];
+    [_browsers addObject:browser];
+    [browser showWindow:nil];
+}
+
+- (void)showDriveFiles:(NSMenuItem*)sender {
+    NSString* path = [_emulator diskPathForDrive:sender.tag];
+    if (path) [self browseDiskAtPath:path];
+}
+
+- (void)browseDiskImage:(id)sender {
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = @"Show Files";
+    panel.message = @"Choose an H17 disk image (.h8d) to copy files to or from";
+    if ([panel runModal] != NSModalResponseOK) return;
+    [self browseDiskAtPath:panel.URL.path];
+}
+
 - (void)updateTitle {
     NSString* sy0 = [_emulator diskPathForDrive:0];
     _window.title = sy0 ? [NSString stringWithFormat:@"Heathkit H89 — SY0: %@", sy0.lastPathComponent]
@@ -140,6 +179,8 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
 - (void)menuNeedsUpdate:(NSMenu*)menu {
     if (menu != _disksMenu) return;
     [menu removeAllItems];
+    [menu addItemWithTitle:@"Browse Disk Image…" action:@selector(browseDiskImage:) keyEquivalent:@"O"].target = self;
+    [menu addItem:[NSMenuItem separatorItem]];
     if (_emulator.driveCount == 0) {
         [menu addItemWithTitle:@"No H17 Controller (444-19 ROM missing)" action:nil keyEquivalent:@""].enabled = NO;
         return;
@@ -156,6 +197,13 @@ static NSString* DiskKey(NSInteger drive, NSString* field) {
         insert.tag = d;
         insert.target = self;
         insert.indentationLevel = 1;
+        NSMenuItem* files = [menu addItemWithTitle:@"Show Files…"
+                                            action:path ? @selector(showDriveFiles:) : nil
+                                     keyEquivalent:@""];
+        files.tag = d;
+        files.target = self;
+        files.enabled = path != nil;
+        files.indentationLevel = 1;
         NSMenuItem* eject = [menu addItemWithTitle:@"Eject"
                                             action:path ? @selector(ejectDisk:) : nil
                                      keyEquivalent:d == 0 ? @"e" : @""];

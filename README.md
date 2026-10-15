@@ -32,6 +32,29 @@ Writes go straight back to the image file, like a real disk. Tick "Write
 protected" in the Mac open dialog (or use `--ro` with `h89run`) to keep an
 image unchanged. To boot, type `B` then Return at the MTR-90 `H:` prompt.
 
+### Copying files to and from disks
+
+HDOS 2.0 and Heath CP/M 2.2 disks can be read and changed from the host.
+- **Mac:** Disks › SY*n*: › Show Files…, or Disks › Browse Disk Image… (⇧⌘O)
+  for any `.h8d`. Insert Files… (or drop files on the list) copies files onto
+  the disk. Extract or Extract All copies them to a folder on the Desktop named
+  after the image. Delete removes them.
+- **Command line:** `h8dtool list|get|put|rm image.h8d ...` (see below).
+
+Files come out exactly as stored: whole sectors (HDOS, padded with zeros) or
+whole 128-byte records (CP/M, padded with ^Z). Host names are converted to
+8.3 upper case. Files inserted into HDOS disks are dated today, but in 1999,
+because HDOS 2.0 can't show later years. If the disk is in a drive while you
+change it, the running OS won't see the change until you DISMOUNT and MOUNT it
+(HDOS) or warm boot with Control-C (CP/M).
+
+```sh
+build/h8dtool list disks/CPM_2-2-03.H8D
+build/h8dtool get  disks/CPM_2-2-03.H8D -d out PIP.COM   # no names: every file
+build/h8dtool put  mydisk.h8d hello.asm [--replace]
+build/h8dtool rm   mydisk.h8d HELLO.ASM
+```
+
 ### Keyboard
 
 | H19 key | Host key |

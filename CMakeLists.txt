@@ -34,6 +34,7 @@ add_library(h89core STATIC
     core/cpu/Z80Disasm.cpp
     core/devices/H17.cpp
     core/devices/Ins8250.cpp
+    core/media/DiskFiles.cpp
     core/media/H17Disk.cpp
     core/terminal/Crtc6845.cpp
     core/terminal/H19.cpp
@@ -66,6 +67,7 @@ if(APPLE)
         platform/mac/AppDelegate.mm
         platform/mac/H89View.mm
         platform/mac/H89Emulator.mm
+        platform/mac/H89DiskBrowser.mm
     )
     set_target_properties(H89 PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/platform/mac/Info.plist.in
@@ -114,6 +116,10 @@ add_executable(h89run tools/h89run.cpp)
 target_compile_options(h89run PRIVATE ${H89_WARNINGS})
 target_link_libraries(h89run PRIVATE h89core)
 
+add_executable(h8dtool tools/h8dtool.cpp)
+target_compile_options(h8dtool PRIVATE ${H89_WARNINGS})
+target_link_libraries(h8dtool PRIVATE h89core)
+
 # --- Tests --------------------------------------------------------------------
 if(H89_BUILD_TESTS)
     enable_testing()
@@ -127,6 +133,11 @@ if(H89_BUILD_TESTS)
     target_compile_options(machine_tests PRIVATE ${H89_WARNINGS})
     target_link_libraries(machine_tests PRIVATE h89core)
     add_test(NAME machine_tests COMMAND machine_tests)
+
+    add_executable(diskfiles_tests tests/diskfiles_tests.cpp)
+    target_compile_options(diskfiles_tests PRIVATE ${H89_WARNINGS})
+    target_link_libraries(diskfiles_tests PRIVATE h89core)
+    add_test(NAME diskfiles_tests COMMAND diskfiles_tests)
 
     # Boot tests against real ROMs, registered only when they are present in
     # roms/ (they are copyrighted and not distributed).
