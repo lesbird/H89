@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(H89 VERSION 1.0.0 LANGUAGES C CXX)
+project(H89 VERSION 1.1.0 LANGUAGES C CXX)
 
 if(APPLE)
     enable_language(OBJC OBJCXX)
