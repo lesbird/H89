@@ -1,11 +1,15 @@
 #include "DebugControl.h"
 #include "Machine.h"
 #include "check.h"
+#include "devices/H17.h"
 #include "devices/Ins8250.h"
 
+#include <algorithm>
 #include <initializer_list>
 #include <string>
 
+using h89::H17;
+using h89::H17Disk;
 using h89::Ins8250;
 using h89::Machine;
 using h89::MachineConfig;
@@ -194,3 +198,64 @@ TEST_CASE("Breakpoints stop execution and stepping continues past them") {
 }
 
 int main() { return check::runAll(); }
+
+namespace {
+
+// Writes `bytes` to the H17 with the write gate on from `startByte` byte
+// times into sector slot `slot` of the current revolution.
+void h17Write(H17& h, int slot, int startByte, const std::vector<uint8_t>& bytes) {
+    h.tick(slot * H17::kSectorCycles + startByte * H17::kCyclesPerByte);
+    h.write(3, 0x13); // write gate, drive 0, motor
+    for (uint8_t b : bytes) {
+        h.write(0, b);
+        h.tick(H17::kCyclesPerByte);
+    }
+    h.write(3, 0x12);
+}
+
+std::vector<uint8_t> h17Block(const std::vector<uint8_t>& lead, const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> v(10, 0x00);
+    v.insert(v.end(), lead.begin(), lead.end());
+    v.push_back(H17::kSync);
+    v.insert(v.end(), data.begin(), data.end());
+    v.push_back(H17::checksum(data.data(), static_cast<int>(data.size())));
+    v.insert(v.end(), {0, 0, 0});
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("H17 sector write keeps data that looks like a header") {
+    H17 h;
+    h.disk(0).loadData(std::vector<uint8_t>(40 * H17Disk::kTrackSize, 0xE5), false);
+    h.write(3, 0x12); // drive 0, motor; the head is on track 0
+    // Sector 3's data, written after its header as a driver does; it starts
+    // 00 00 00 00, which is also volume 0, track 0, sector 0 and a good
+    // header checksum.
+    std::vector<uint8_t> data(H17Disk::kSectorSize, 0x5A);
+    data[0] = data[1] = data[2] = data[3] = 0x00;
+    h17Write(h, 3, 19, h17Block({}, data));
+    const uint8_t* s3 = h.disk(0).sector(0, 3);
+    CHECK_EQ(std::equal(data.begin(), data.end(), s3), true);
+    const uint8_t* s0 = h.disk(0).sector(0, 0);
+    CHECK_EQ(s0[0], 0xE5); // sector 0 is untouched
+}
+
+TEST_CASE("H17 format write still takes the sector from its header") {
+    H17 h;
+    h.disk(0).loadData(std::vector<uint8_t>(40 * H17Disk::kTrackSize, 0xE5), false);
+    h.write(3, 0x12);
+    // From the hole, as FORMAT does: a header for sector 7 in slot 2's
+    // place, then its data.
+    std::vector<uint8_t> hdr = {0x00, 0x00, 0x07};
+    hdr.push_back(H17::checksum(hdr.data(), 3));
+    std::vector<uint8_t> v(10, 0x00);
+    v.push_back(H17::kSync);
+    v.insert(v.end(), hdr.begin(), hdr.end());
+    std::vector<uint8_t> data(H17Disk::kSectorSize, 0x47);
+    auto block = h17Block({}, data);
+    v.insert(v.end(), block.begin(), block.end());
+    h17Write(h, 2, 2, v);
+    CHECK_EQ(h.disk(0).sector(0, 7)[0], 0x47);
+    CHECK_EQ(h.disk(0).sector(0, 2)[0], 0xE5);
+}

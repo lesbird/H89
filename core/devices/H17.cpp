@@ -188,13 +188,23 @@ void H17::commitWrite() {
     // that sector's header).
     int sector = static_cast<int>((writeStart_ % kRevolutionCycles) / kSectorCycles);
 
+    // Byte i went out about i byte times after the write gate went on. A
+    // header can only be where headers are, near the start of a sector slot
+    // (a format write starts at the hole); a sector write starts after the
+    // header, so whatever its data holds is data, even bytes that look like
+    // a header (00 00 00 00 on track 0, say).
+    const int startByte = static_cast<int>((writeStart_ % kSectorCycles) / kCyclesPerByte);
+    auto inHeaderPlace = [&](int at) {
+        return (startByte + at) % kBytesPerSector < (kHeaderSyncByte + kDataSyncByte) / 2;
+    };
+
     int i = 0;
     while (i < n) {
         while (i < n && buf[i] != kSync) ++i;
         if (i >= n) break;
         const int rec = i + 1; // first byte after the sync
-        bool header = rec + 3 < n && buf[rec + 1] == drv.track && buf[rec + 2] < H17Disk::kSectorsPerTrack &&
-                      checksum(&buf[rec], 3) == buf[rec + 3];
+        bool header = inHeaderPlace(i) && rec + 3 < n && buf[rec + 1] == drv.track &&
+                      buf[rec + 2] < H17Disk::kSectorsPerTrack && checksum(&buf[rec], 3) == buf[rec + 3];
         if (header) {
             sector = buf[rec + 2];
             if (buf[rec] != drv.disk.volume(drv.track)) drv.disk.setVolume(drv.track, buf[rec]);
