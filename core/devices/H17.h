@@ -89,6 +89,7 @@ private:
     // Transmitter: bytes written while the write gate is on.
     uint64_t txBusyUntil_ = 0;
     uint64_t writeStart_ = 0;
+    uint64_t writeFirst_ = 0; // when the first byte of writeBuffer_ went out
     std::vector<uint8_t> writeBuffer_;
 
     // Cached byte stream of the selected track.

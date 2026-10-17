@@ -259,3 +259,28 @@ TEST_CASE("H17 format write still takes the sector from its header") {
     CHECK_EQ(h.disk(0).sector(0, 7)[0], 0x47);
     CHECK_EQ(h.disk(0).sector(0, 2)[0], 0xE5);
 }
+
+TEST_CASE("H17 format write after an erase with the gate on") {
+    H17 h;
+    h.disk(0).loadData(std::vector<uint8_t>(40 * H17Disk::kTrackSize, 0x00), false);
+    h.write(3, 0x12);
+    // As Heath's FORMAT does for sector 0: the gate goes on for a long
+    // erase, and the header comes only after the next hole.
+    h.tick(4 * H17::kSectorCycles + 100 * H17::kCyclesPerByte);
+    h.write(3, 0x13);
+    h.tick(H17::kSectorCycles * 3 + 220 * H17::kCyclesPerByte + 2 * H17::kCyclesPerByte);
+    std::vector<uint8_t> hdr = {0x00, 0x00, 0x00};
+    hdr.push_back(H17::checksum(hdr.data(), 3));
+    std::vector<uint8_t> v(10, 0x00);
+    v.push_back(H17::kSync);
+    v.insert(v.end(), hdr.begin(), hdr.end());
+    std::vector<uint8_t> data(H17Disk::kSectorSize, 0xE5);
+    auto block = h17Block({}, data);
+    v.insert(v.end(), block.begin(), block.end());
+    for (uint8_t b : v) {
+        h.write(0, b);
+        h.tick(H17::kCyclesPerByte);
+    }
+    h.write(3, 0x12);
+    CHECK_EQ(h.disk(0).sector(0, 0)[0], 0xE5);
+}

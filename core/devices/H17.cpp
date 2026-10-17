@@ -147,6 +147,7 @@ void H17::write(int reg, uint8_t value) {
     switch (reg & 3) {
     case 0: // data
         if (control_ & CTL_WRITE_GATE) {
+            if (writeBuffer_.empty()) writeFirst_ = std::max(txBusyUntil_, now_);
             writeBuffer_.push_back(value);
             txBusyUntil_ = std::max(txBusyUntil_, now_) + kCyclesPerByte;
         }
@@ -188,12 +189,13 @@ void H17::commitWrite() {
     // that sector's header).
     int sector = static_cast<int>((writeStart_ % kRevolutionCycles) / kSectorCycles);
 
-    // Byte i went out about i byte times after the write gate went on. A
-    // header can only be where headers are, near the start of a sector slot
-    // (a format write starts at the hole); a sector write starts after the
-    // header, so whatever its data holds is data, even bytes that look like
-    // a header (00 00 00 00 on track 0, say).
-    const int startByte = static_cast<int>((writeStart_ % kSectorCycles) / kCyclesPerByte);
+    // Byte i went out i byte times after the first one (the transmitter
+    // paces them). A header can only be where headers are, near the start
+    // of a sector slot (a format write starts at the hole; Heath's FORMAT
+    // turns the gate on for an erase well before it writes); a sector write
+    // starts after the header, so whatever its data holds is data, even
+    // bytes that look like a header (00 00 00 00 on track 0, say).
+    const int startByte = static_cast<int>((writeFirst_ % kSectorCycles) / kCyclesPerByte);
     auto inHeaderPlace = [&](int at) {
         return (startByte + at) % kBytesPerSector < (kHeaderSyncByte + kDataSyncByte) / 2;
     };
