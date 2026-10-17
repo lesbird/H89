@@ -25,6 +25,7 @@ constexpr unichar kBreakKey = NSF10FunctionKey;
 @implementation H89View {
     h89::GLRenderer _renderer;
     BOOL _rendererReady;
+    double _scrollRows; // wheel movement not yet a whole row
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -137,6 +138,28 @@ constexpr unichar kBreakKey = NSF10FunctionKey;
         if (c < 0x80) [emu typeCharacter:c];
     }
 }
+
+#pragma mark - Scrollback
+
+- (void)scrollWheel:(NSEvent*)event {
+    H89Emulator* emu = self.emulator;
+    if (!emu) return;
+    // Trackpads report points; a mouse wheel reports lines, 3 rows a notch.
+    // Up (or a swipe down) goes back.
+    if (event.hasPreciseScrollingDeltas) {
+        CGFloat screen = MIN(self.bounds.size.height, self.bounds.size.width * 0.75); // 4:3 letterbox
+        _scrollRows += event.scrollingDeltaY / MAX(screen / 25, 1.0);
+    } else {
+        _scrollRows += event.scrollingDeltaY * 3;
+    }
+    NSInteger rows = (NSInteger)_scrollRows;
+    if (rows == 0) return;
+    _scrollRows -= rows;
+    emu.scrollbackOffset += rows;
+    self.needsDisplay = YES;
+}
+
+#pragma mark - Keyboard
 
 - (void)keyUp:(NSEvent*)event {
     NSString* bare = event.charactersIgnoringModifiers;

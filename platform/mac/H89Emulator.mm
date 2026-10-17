@@ -280,6 +280,14 @@ static NSError* TransferError(const std::string& message) {
     return @(_serial[port].description().c_str());
 }
 
+- (NSInteger)scrollbackOffset {
+    return self.h19->viewOffset();
+}
+
+- (void)setScrollbackOffset:(NSInteger)lines {
+    self.h19->setViewOffset(static_cast<int>(lines));
+}
+
 - (const uint8_t*)framebuffer {
     return self.h19->framebuffer().pixels.data();
 }

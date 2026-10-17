@@ -82,6 +82,9 @@ typedef NS_ENUM(NSInteger, H89Upload) { H89UploadText, H89UploadXmodem, H89Uploa
 @property(nonatomic, readonly) NSInteger screenWidth;
 @property(nonatomic, readonly) NSInteger screenHeight;
 @property(nonatomic, readonly) uint64_t frameCount;
+// Lines the screen is scrolled back through the H19's scrollback (0 = the
+// live screen). Clamped to the lines there are; typing returns it to 0.
+@property(nonatomic) NSInteger scrollbackOffset;
 
 // Called on the emulation thread (currently the main thread) when the H19
 // rings its bell.

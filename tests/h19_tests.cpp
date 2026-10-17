@@ -110,6 +110,56 @@ TEST_CASE("Keypad sends digits, shifted keypad sends cursor keys") {
     CHECK_EQ(t.sent, "7" + ESC + "A" + ESC + "B" + "\r");
 }
 
+TEST_CASE("Lines scrolled off the top are kept for scrolling back") {
+    Terminal t;
+    for (int i = 0; i < 30; ++i) t.receive("line " + std::to_string(i) + "\r\n");
+    // 30 lines and the cursor on a 31st: the first 7 have scrolled off.
+    CHECK_EQ(t.term.scrollbackLines(), 7);
+    CHECK_EQ(t.row(0), std::string("line 7"));
+    t.term.setViewOffset(3);
+    CHECK_EQ(t.row(0), std::string("line 4"));
+    CHECK_EQ(t.row(3), std::string("line 7"));
+    // New lines keep the view on the same text.
+    t.receive("line 30\r\n");
+    CHECK_EQ(t.term.viewOffset(), 4);
+    CHECK_EQ(t.row(0), std::string("line 4"));
+    t.term.setViewOffset(100); // clamps to the oldest line
+    CHECK_EQ(t.term.viewOffset(), 8);
+    CHECK_EQ(t.row(0), std::string("line 0"));
+    // Typing returns to the live screen.
+    t.type("x");
+    CHECK_EQ(t.term.viewOffset(), 0);
+    CHECK_EQ(t.row(0), std::string("line 8"));
+}
+
+TEST_CASE("The 25th line stays put while scrolled back") {
+    Terminal t;
+    t.receive(ESC + "x1" + ESC + "Y" + char(32 + 24) + char(32) + "STATUS" + ESC + "Y" + char(32 + 23) + char(32));
+    for (int i = 0; i < 5; ++i) t.receive("line " + std::to_string(i) + "\r\n");
+    CHECK_EQ(t.term.scrollbackLines(), 5);
+    t.term.setViewOffset(5);
+    CHECK_EQ(t.row(0), std::string(""));
+    CHECK_EQ(t.row(24), std::string("STATUS"));
+}
+
+TEST_CASE("Scrollback keeps whole lines with the 25th line on") {
+    // The firmware's 25th-line move overwrites the start of the top row just
+    // before it scrolls off.
+    Terminal t;
+    t.receive(ESC + "x1" + ESC + "Y" + char(32 + 24) + char(32) + "STATUS" + ESC + "Y" + char(32 + 23) + char(32));
+    const std::string text = "HCOS ON CP/M FOR H17 DISKS WITH OPTION(S) I, VERSION 2X03";
+    for (int i = 0; i < 30; ++i) t.receive(std::to_string(i) + " " + text + "\r\n");
+    // Lines 0-6 have scrolled off, after the 23 blank rows above the cursor.
+    t.term.setViewOffset(7);
+    for (int i = 0; i < 24; ++i) CHECK_EQ(t.row(i), std::to_string(i) + " " + text);
+}
+
+TEST_CASE("Clearing the screen doesn't fill the scrollback") {
+    Terminal t;
+    t.receive("one\r\ntwo" + ESC + "E" + "three");
+    CHECK_EQ(t.term.scrollbackLines(), 0);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) {
         std::fprintf(stderr, "usage: %s <rom-folder>\n", argv[0]);

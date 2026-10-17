@@ -145,6 +145,11 @@ longer for green and amber), a soft glow, scanlines and a gently curved tube
 face. Turn it off with View › CRT Effects (Mac) or Ctrl+Alt+C (Windows) for a
 flat, crisp picture.
 
+The emulator keeps the last 1,000 lines that scroll off the top of the
+screen. Scroll up with the mouse wheel or trackpad to read them, and down to
+come back; typing returns to the live screen. The 25th line stays put, and
+the scrollback is cleared by a reset. It works the same in terminal mode.
+
 ### Debugger
 
 A Dear ImGui debugger shows the CPU board's Z80 registers (editable while

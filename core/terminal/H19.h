@@ -16,6 +16,7 @@ namespace h89 {
 // H19 raster: 80 columns x 8 pixels, 25 rows x 10 scanlines.
 constexpr int kScreenWidth = 640;
 constexpr int kScreenHeight = 250;
+constexpr int kScreenColumns = kScreenWidth / 8;
 
 // One luminance byte per pixel (0 = dark, 255 = full phosphor).
 struct Framebuffer {
@@ -112,10 +113,23 @@ public:
     std::function<void()> onBell;
     std::function<void()> onKeyClick;
 
+    // Scrollback: lines that scrolled off the top of the screen, oldest
+    // first, as video RAM character codes. Kept by the emulator, not the
+    // firmware; cleared by reset() and not saved in states.
+    static constexpr int kScrollbackLines = 1000;
+    int scrollbackLines() const { return static_cast<int>(scrollback_.size()); }
+    // Lines the view is scrolled back from the live screen (0 = live). The
+    // 25th line stays put. New lines keep the view on the same text, and
+    // typing returns it to the live screen. Redraws the framebuffer at once,
+    // so it works while the emulator is paused.
+    int viewOffset() const { return viewOffset_; }
+    void setViewOffset(int lines);
+
     const Framebuffer& framebuffer() const { return fb_; }
     uint64_t frameCount() const { return frames_; }
     // The displayed screen as text, one line per row (reverse video and
-    // graphics characters are shown as their base codes).
+    // graphics characters are shown as their base codes). Follows the
+    // scrollback view.
     std::string screenText() const;
 
     void saveState(StateWriter& w) const;
@@ -140,6 +154,7 @@ private:
     uint8_t keyboardFlags() const;
     void tickKeyboard(int cycles);
     void tickVideo(int cycles);
+    void trackScroll();
     void renderFrame();
     int frameCycles() const;
     int displayEndCycle() const;
@@ -167,6 +182,22 @@ private:
     bool nmiArmed_ = false;
     Framebuffer fb_;
     uint64_t frames_ = 0;
+
+    // Scrollback. The firmware scrolls by moving the 6845 start address a
+    // row at a time (at vertical blank), so a start address k rows further on
+    // than last frame means the top k rows of last frame's screen are gone.
+    static constexpr int kScrollingRows = 24; // the 25th line doesn't scroll
+    using Line = std::array<uint8_t, kScreenColumns>;
+    std::deque<Line> scrollback_;
+    std::array<Line, kScrollingRows> lastScreen_{};
+    uint16_t lastStart_ = 0;
+    bool haveLastScreen_ = false;
+    // With the 25th line on, the firmware scrolls by first copying the 25th
+    // line a row further on, which wraps over the top row's first 32
+    // characters before the start address moves. For a few frames after
+    // that, the saved top row keeps those characters.
+    int heldFrames_ = 0;
+    int viewOffset_ = 0;
 };
 
 } // namespace h89

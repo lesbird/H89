@@ -59,6 +59,10 @@ void H19::reset() {
     nmiArmed_ = false;
     frames_ = 0;
     std::fill(fb_.pixels.begin(), fb_.pixels.end(), 0);
+    scrollback_.clear();
+    haveLastScreen_ = false;
+    heldFrames_ = 0;
+    viewOffset_ = 0;
 }
 
 uint8_t H19::memRead(uint16_t addr) {
@@ -72,7 +76,12 @@ uint8_t H19::memRead(uint16_t addr) {
 }
 
 void H19::memWrite(uint16_t addr, uint8_t value) {
-    if (addr >= 0xC000) vram_[addr & 0x7FF] = value;
+    if (addr >= 0xC000) {
+        // Past the 25th line: the firmware is moving the 25th line down a row
+        // to scroll, and the move wraps onto the start of the top row.
+        if (((addr - crtc_.startAddress()) & 0x7FF) >= 25 * kScreenColumns) heldFrames_ = 3;
+        vram_[addr & 0x7FF] = value;
+    }
     else if (addr >= 0x4000 && addr < 0x8000) ram_[addr & 0x3FF] = value;
 }
 
@@ -149,6 +158,7 @@ bool H19::takeTypedFlowKey(uint8_t code) {
 }
 
 void H19::typeChar(uint8_t ascii) {
+    setViewOffset(0);
     ascii &= 0x7F;
     if (ascii == 0x13) ++typedXoff_;
     if (ascii == 0x11) ++typedXon_;
@@ -170,6 +180,7 @@ void H19::typeChar(uint8_t ascii) {
 }
 
 void H19::pressKey(H19Key key, bool shift) {
+    setViewOffset(0);
     uint8_t flags = shift ? (KF_SHIFT | KF_LSHIFT) : 0;
     keyQueue_.push_back({kSpecialKeyCode[static_cast<int>(key)], flags});
 }
@@ -201,6 +212,7 @@ void H19::tickVideo(int cycles) {
     frameCycle_ += cycles;
     if (inDisplay_ && frameCycle_ >= displayEndCycle()) {
         inDisplay_ = false;
+        trackScroll();
         renderFrame();
         ++frames_;
         if (nmiArmed_) {
@@ -224,12 +236,53 @@ int H19::step() {
     return t;
 }
 
+void H19::trackScroll() {
+    const int cols = crtc_.horizontalDisplayed();
+    if (cols != kScreenColumns) { // firmware not running (yet)
+        haveLastScreen_ = false;
+        return;
+    }
+    const uint16_t start = crtc_.startAddress();
+    // What the top row held before the firmware began moving the 25th line
+    // over the start of it.
+    Line top;
+    bool holdTop = false;
+    if (haveLastScreen_) {
+        int moved = (start - lastStart_) & 0x7FF; // 2K video RAM wraps
+        int rows = moved / cols;
+        if (moved % cols == 0 && rows >= 1 && rows <= kScrollingRows) {
+            for (int i = 0; i < rows; ++i) scrollback_.push_back(lastScreen_[i]);
+            while (scrollback_.size() > size_t(kScrollbackLines)) scrollback_.pop_front();
+            if (viewOffset_ > 0) viewOffset_ = std::min(viewOffset_ + rows, scrollbackLines());
+            if (rows < kScrollingRows) top = lastScreen_[rows], holdTop = true;
+        } else if (moved == 0) {
+            top = lastScreen_[0], holdTop = true;
+        }
+    }
+    for (int row = 0; row < kScrollingRows; ++row)
+        for (int col = 0; col < cols; ++col) lastScreen_[row][col] = vram_[(start + row * cols + col) & 0x7FF];
+    if (heldFrames_ > 0) {
+        --heldFrames_;
+        constexpr int kOverlap = (kScrollingRows + 2) * kScreenColumns - 2048; // 32 characters
+        if (holdTop) std::copy_n(top.begin(), kOverlap, lastScreen_[0].begin());
+    }
+    lastStart_ = start;
+    haveLastScreen_ = true;
+}
+
+void H19::setViewOffset(int lines) {
+    lines = std::clamp(lines, 0, scrollbackLines());
+    if (lines == viewOffset_) return;
+    viewOffset_ = lines;
+    renderFrame();
+}
+
 void H19::renderFrame() {
     auto& px = fb_.pixels;
     std::fill(px.begin(), px.end(), 0);
     if (config_.font.empty()) return;
 
-    const int cols = std::min(crtc_.horizontalDisplayed(), kScreenWidth / 8);
+    const int cols = std::min(crtc_.horizontalDisplayed(), kScreenColumns);
     const int lines = crtc_.scanLinesPerRow();
     const int rows = std::min(crtc_.verticalDisplayed(), kScreenHeight / std::max(lines, 1));
     const uint16_t start = crtc_.startAddress();
@@ -244,10 +297,13 @@ void H19::renderFrame() {
     }
 
     for (int row = 0; row < rows; ++row) {
+        // Scrolled back, the top rows come from the scrollback.
+        const int src = row < kScrollingRows ? row - viewOffset_ : row;
+        const Line* old = src < 0 ? &scrollback_[scrollback_.size() + src] : nullptr;
         for (int col = 0; col < cols; ++col) {
-            uint16_t ma = (start + row * crtc_.horizontalDisplayed() + col) & 0x3FFF;
-            uint8_t ch = vram_[ma & 0x7FF];
-            bool isCursor = cursorOn && ma == cursor;
+            uint16_t ma = (start + src * crtc_.horizontalDisplayed() + col) & 0x3FFF;
+            uint8_t ch = old ? (*old)[col] : vram_[ma & 0x7FF];
+            bool isCursor = !old && cursorOn && ma == cursor;
             for (int ra = 0; ra < lines; ++ra) {
                 int y = row * lines + ra;
                 if (y >= kScreenHeight) break;
@@ -276,10 +332,12 @@ std::string H19::screenText() const {
     const int cols = crtc_.horizontalDisplayed();
     const int rows = crtc_.verticalDisplayed();
     for (int row = 0; row < rows; ++row) {
+        const int src = row < kScrollingRows ? row - viewOffset_ : row;
+        const Line* old = src < 0 ? &scrollback_[scrollback_.size() + src] : nullptr;
         std::string line;
         for (int col = 0; col < cols; ++col) {
-            uint16_t ma = (crtc_.startAddress() + row * cols + col) & 0x3FFF;
-            uint8_t ch = vram_[ma & 0x7FF] & 0x7F;
+            uint16_t ma = (crtc_.startAddress() + src * cols + col) & 0x3FFF;
+            uint8_t ch = (old && col < kScreenColumns ? (*old)[col] : vram_[ma & 0x7FF]) & 0x7F;
             line += (ch >= 0x20 && ch < 0x7F) ? static_cast<char>(ch) : ' ';
         }
         line.erase(line.find_last_not_of(' ') + 1);
@@ -324,6 +382,8 @@ void H19::loadState(StateReader& r) {
     if (pixels.size() == fb_.pixels.size()) fb_.pixels = std::move(pixels);
     frames_ = r.u64();
     r.end();
+    haveLastScreen_ = false; // the start address jumped; that isn't scrolling
+    viewOffset_ = 0;
 }
 
 } // namespace h89

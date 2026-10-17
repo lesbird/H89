@@ -40,6 +40,7 @@ struct App {
     h89::GLRenderer renderer;
     GLFWwindow* window = nullptr;
     bool suppressNextChar = false; // keypad keys also generate a char event
+    double scrollRows = 0;         // wheel movement not yet a whole row
     int speed = 1;                 // frames per tick; 0 = as fast as possible
     int lastSpeed = 1;             // to return to from turbo
     int bell = 0;                  // 0 H19 speaker, 1 system sound, 2 off

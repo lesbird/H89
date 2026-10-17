@@ -93,6 +93,17 @@ bool overlayHasKeyboard(const App& app) {
 #endif
 }
 
+// True while an ImGui window is under the mouse.
+bool overlayHasMouse(const App& app) {
+#if H89_DEBUGGER
+    bool transfer = app.link && app.link->transfer();
+    return (app.debuggerVisible || app.settingsVisible || transfer) && ImGui::GetIO().WantCaptureMouse;
+#else
+    (void)app;
+    return false;
+#endif
+}
+
 bool keypadKey(int key, h89::H19Key& out) {
     if (key >= GLFW_KEY_KP_0 && key <= GLFW_KEY_KP_9) {
         out = static_cast<h89::H19Key>(static_cast<int>(h89::H19Key::Keypad0) + (key - GLFW_KEY_KP_0));
@@ -235,6 +246,18 @@ void onChar(GLFWwindow* window, unsigned int codepoint) {
         return;
     }
     if (codepoint >= 0x20 && codepoint < 0x7F) h19(*app).typeChar(static_cast<uint8_t>(codepoint));
+}
+
+// The wheel scrolls back through the H19's scrollback, 3 rows a notch.
+void onScroll(GLFWwindow* window, double, double yoffset) {
+    auto* app = static_cast<App*>(glfwGetWindowUserPointer(window));
+    if (overlayHasMouse(*app)) return;
+    app->scrollRows += yoffset * 3;
+    int rows = static_cast<int>(app->scrollRows);
+    if (rows == 0) return;
+    app->scrollRows -= rows;
+    h89::H19& term = h19(*app);
+    term.setViewOffset(term.viewOffset() + rows);
 }
 
 // The first time the emulator runs, copies the disks that come with it to
@@ -726,6 +749,7 @@ int main(int argc, char** argv) {
     glfwSetKeyCallback(window, onKey);
     glfwSetCharCallback(window, onChar);
     glfwSetDropCallback(window, onDrop);
+    glfwSetScrollCallback(window, onScroll);
 #if H89_DEBUGGER
     // After our callbacks, so the ImGui backend chains to them.
     IMGUI_CHECKVERSION();
