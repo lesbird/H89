@@ -366,7 +366,9 @@ cmake --build build -j
 build/H89-glfw
 ```
 
-Linux is built by users rather than CI, so reports are welcome.
+CI builds and tests Linux, and releases include a `H89-<version>-Linux.tar.gz`
+that still needs the GL and X11/Wayland runtime libraries. It has had little
+hands-on testing, so reports are welcome.
 
 ### Packaging a release
 

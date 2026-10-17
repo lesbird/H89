@@ -199,7 +199,8 @@ target_link_libraries(h8dtool PRIVATE h89core)
 # --- Packaging ------------------------------------------------------------------
 # macOS: tools/package_mac.sh signs, notarizes and wraps H89.app in a .dmg.
 # Windows: cpack -C Release builds an installer (NSIS) and a .zip holding
-# H89.exe, the command-line tools, roms\ and disks\.
+# H89.exe, the command-line tools, roms\ and disks\. Linux: cpack builds a
+# .tar.gz with the same contents.
 if(APPLE)
     install(TARGETS H89 BUNDLE DESTINATION .)
 elseif(H89_GLFW_FRONTEND)
@@ -227,6 +228,8 @@ if(WIN32)
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
     set(CPACK_NSIS_MUI_FINISHPAGE_RUN "H89.exe")
     set(CPACK_CREATE_DESKTOP_LINKS "H89")
+elseif(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "TGZ")
 else()
     set(CPACK_GENERATOR "ZIP")
 endif()

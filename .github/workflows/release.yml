@@ -1,6 +1,6 @@
 name: Release
 
-# Builds the macOS .dmg and the Windows installer and .zip. Pushing a tag
+# Builds the macOS .dmg, the Windows installer and .zip, and the Linux .tar.gz. Pushing a tag
 # such as v1.0.0 also publishes them as a GitHub release; running the
 # workflow by hand just leaves them as downloadable artifacts.
 #
@@ -86,9 +86,35 @@ jobs:
             build/H89-*.exe
             build/H89-*.zip
 
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GLFW dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev wayland-protocols
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DH89_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package
+        working-directory: build
+        run: cpack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: build/H89-*.tar.gz
+
   publish:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [macos, windows]
+    needs: [macos, windows, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
