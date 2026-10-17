@@ -353,6 +353,21 @@ Ctrl+Alt+D debugger, Ctrl+Alt+T turbo, Ctrl+Alt+S / Ctrl+Alt+L save / load
 the quick state. Options `--printer`, `--modem` and `--aux` connect the
 serial ports; a folder given on the command line is used for the ROMs.
 
+### Linux
+
+Builds the same GLFW front end as Windows. On Debian or Ubuntu:
+
+```sh
+sudo apt install build-essential cmake git pkg-config libgl-dev \
+  libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+  libwayland-dev libxkbcommon-dev wayland-protocols
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+build/H89-glfw
+```
+
+Linux is built by users rather than CI, so reports are welcome.
+
 ### Packaging a release
 
 - **macOS:** `tools/package_mac.sh` builds a universal app and writes

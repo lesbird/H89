@@ -1,6 +1,6 @@
 #include "GL.h"
 
-#if !defined(__APPLE__)
+#if defined(_WIN32)
 
 #define H89_GL_DEFINE(ret, name, args) PFN_##name name = nullptr;
 H89_GL_FUNCTIONS(H89_GL_DEFINE)

@@ -2,9 +2,10 @@
 
 // Pulls in OpenGL 3.2+ core declarations for each platform.
 //
-// macOS ships the core-profile headers. On Windows, opengl32 only exports
-// GL 1.1, so the newer entry points are loaded at runtime by gl::loadFunctions()
-// (see GL.cpp). Call it once after a context is current.
+// macOS ships the core-profile headers, and libGL on Linux/BSD exports every
+// core entry point. On Windows, opengl32 only exports GL 1.1, so the newer
+// entry points are loaded at runtime by gl::loadFunctions() (see GL.cpp). Call
+// it once after a context is current.
 
 #if defined(__APPLE__)
 #ifndef GL_SILENCE_DEPRECATION
@@ -16,14 +17,23 @@ namespace gl {
 inline bool loadFunctions(void* (*)(const char*)) { return true; }
 } // namespace gl
 
+#elif !defined(_WIN32)
+#ifndef GL_GLEXT_PROTOTYPES
+#define GL_GLEXT_PROTOTYPES
+#endif
+#include <GL/gl.h>
+#include <GL/glext.h>
+
+namespace gl {
+inline bool loadFunctions(void* (*)(const char*)) { return true; }
+} // namespace gl
+
 #else
 
-#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#endif
 #include <GL/gl.h>
 
 #include <cstddef>
